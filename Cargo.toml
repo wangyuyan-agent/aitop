@@ -1,0 +1,39 @@
+[package]
+name = "aitop"
+version = "0.1.0"
+edition = "2024"
+description = "AI 额度监控 TUI — openrouter / gemini / codex / claude / copilot / kiro-cli"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/wangyuyan-agent/aitop"
+keywords = ["cli", "tui", "ai", "usage", "monitoring"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+dirs = "6"
+toml = "0.8"
+base64 = "0.22"
+regex = "1"
+glob = "0.3"
+url = "2"
+urlencoding = "2"
+which = "7"
+# TUI 层（骨架先引入，渲染在后续版本落地）
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
