@@ -3,6 +3,8 @@
 //! 每个 provider 实现 [`Provider`] trait，返回统一的 [`Usage`] 结构。
 //! TUI 和 CLI（oneshot / json）都基于这里的数据建模。
 
+use std::sync::Arc;
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -60,18 +62,18 @@ pub trait Provider: Send + Sync {
     async fn fetch(&self) -> Result<Usage>;
 }
 
-pub fn all_providers() -> Vec<Box<dyn Provider>> {
+pub fn all_providers() -> Vec<Arc<dyn Provider>> {
     vec![
-        Box::new(openrouter::OpenRouter::default()),
-        Box::new(gemini::Gemini::default()),
-        Box::new(codex::Codex::default()),
-        Box::new(claude::Claude::default()),
-        Box::new(copilot::Copilot::default()),
-        Box::new(kiro::Kiro::default()),
+        Arc::new(openrouter::OpenRouter::default()),
+        Arc::new(gemini::Gemini::default()),
+        Arc::new(codex::Codex::default()),
+        Arc::new(claude::Claude::default()),
+        Arc::new(copilot::Copilot::default()),
+        Arc::new(kiro::Kiro::default()),
     ]
 }
 
-fn select(filter: &str) -> Result<Vec<Box<dyn Provider>>> {
+pub fn select(filter: &str) -> Result<Vec<Arc<dyn Provider>>> {
     let all = all_providers();
     if filter == "all" {
         return Ok(all);
