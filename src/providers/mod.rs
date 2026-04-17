@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 pub mod claude;
@@ -108,10 +109,7 @@ pub fn select(filter: &str) -> Result<Vec<Arc<dyn Provider>>> {
     if filter == "auto" {
         let out = available_providers();
         if out.is_empty() {
-            return Err(anyhow!(match crate::i18n::get() {
-                crate::i18n::Lang::Zh => "本地未探测到任何已配置的 provider，可试 --provider all",
-                crate::i18n::Lang::En => "no configured providers detected locally; try --provider all",
-            }));
+            return Err(anyhow!(t!("no_auto_provider").into_owned()));
         }
         return Ok(out);
     }
@@ -124,20 +122,16 @@ pub fn select(filter: &str) -> Result<Vec<Arc<dyn Provider>>> {
         }
     }
     if out.is_empty() {
-        return Err(anyhow!(match crate::i18n::get() {
-            crate::i18n::Lang::Zh => format!("未匹配任何 provider：{}", filter),
-            crate::i18n::Lang::En => format!("no provider matched: {}", filter),
-        }));
+        return Err(anyhow!(
+            t!("no_match_provider", filter = filter).into_owned()
+        ));
     }
     Ok(out)
 }
 
 pub async fn oneshot_text(filter: &str) -> Result<()> {
     let providers = select(filter)?;
-    let fail_label = match crate::i18n::get() {
-        crate::i18n::Lang::Zh => "获取失败",
-        crate::i18n::Lang::En => "fetch failed",
-    };
+    let fail_label = t!("fetch_failed");
     for p in providers {
         match p.fetch().await {
             Ok(u) => println!("{}", render_text(&u)),
@@ -171,35 +165,35 @@ pub async fn oneshot_json(filter: &str, pretty: bool) -> Result<()> {
 fn render_text(u: &Usage) -> String {
     let mut lines = vec![format!("== {} ({}) ==", u.provider, u.source)];
     if let Some(acc) = &u.account {
-        lines.push(format!("  {}: {}", crate::i18n::label_account(), acc));
+        lines.push(format!("  {}: {}", t!("label_account"), acc));
     }
     if let Some(plan) = &u.plan {
-        lines.push(format!("  {}: {}", crate::i18n::label_plan(), plan));
+        lines.push(format!("  {}: {}", t!("label_plan"), plan));
     }
     if let Some(s) = &u.session {
         lines.push(format!(
             "  {}: {:.0}% used",
-            crate::i18n::label_session(),
+            t!("label_session"),
             s.used_percent
         ));
     }
     if let Some(w) = &u.weekly {
         lines.push(format!(
             "  {}:  {:.0}% used",
-            crate::i18n::label_weekly(),
+            t!("label_weekly"),
             w.used_percent
         ));
     }
     if let Some(c) = &u.credits {
         lines.push(format!(
             "  {}: {:.2} {}",
-            crate::i18n::label_credits(),
+            t!("label_credits"),
             c.remaining,
             c.unit
         ));
     }
     if !u.sub_quotas.is_empty() {
-        lines.push(format!("  {}:", crate::i18n::label_subquotas()));
+        lines.push(format!("  {}:", t!("label_subquotas")));
         for sq in &u.sub_quotas {
             lines.push(format!("    {:18} {:5.1}% used", sq.label, sq.used_percent));
         }

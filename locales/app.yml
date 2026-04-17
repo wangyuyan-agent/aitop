@@ -1,0 +1,92 @@
+_version: 2
+
+# ---- TUI header / hints ----
+
+hint_quit:
+  en: "quit"
+  zh-CN: "退出"
+  zh-TW: "離開"
+
+hint_refresh:
+  en: "refresh"
+  zh-CN: "刷新"
+  zh-TW: "重新整理"
+
+hint_nav:
+  en: "nav"
+  zh-CN: "导航"
+  zh-TW: "導覽"
+
+status_refreshing:
+  en: "refreshing… (%{remaining} left)"
+  zh-CN: "刷新中…（剩 %{remaining}）"
+  zh-TW: "重新整理中…（剩 %{remaining}）"
+
+status_updated_ago:
+  en: "updated %{seconds}s ago"
+  zh-CN: "%{seconds}s 前更新"
+  zh-TW: "%{seconds}s 前更新"
+
+loading:
+  en: "loading…"
+  zh-CN: "加载中…"
+  zh-TW: "載入中…"
+
+# ---- CLI messages ----
+
+no_providers:
+  en: "[aitop] no providers available"
+  zh-CN: "[aitop] 没有可用的 provider"
+  zh-TW: "[aitop] 沒有可用的 provider"
+
+no_detected_providers:
+  en: "[aitop] no configured providers detected locally; use `--all` to show all, or see README to configure credentials"
+  zh-CN: "[aitop] 本地未探测到已配置的 provider；用 `--all` 显示全部，或参考 README 配置凭证"
+  zh-TW: "[aitop] 本地未偵測到已設定的 provider；用 `--all` 顯示全部，或參考 README 設定憑證"
+
+fetch_failed:
+  en: "fetch failed"
+  zh-CN: "获取失败"
+  zh-TW: "取得失敗"
+
+no_match_provider:
+  en: "no provider matched: %{filter}"
+  zh-CN: "未匹配任何 provider：%{filter}"
+  zh-TW: "未比對到任何 provider：%{filter}"
+
+no_auto_provider:
+  en: "no configured providers detected locally; try --provider all"
+  zh-CN: "本地未探测到任何已配置的 provider，可试 --provider all"
+  zh-TW: "本地未偵測到任何已設定的 provider，可試 --provider all"
+
+# ---- render_text / TUI labels ----
+
+label_account:
+  en: "Account"
+  zh-CN: "账号"
+  zh-TW: "帳號"
+
+label_plan:
+  en: "Plan"
+  zh-CN: "方案"
+  zh-TW: "方案"
+
+label_session:
+  en: "Session"
+  zh-CN: "会话"
+  zh-TW: "會話"
+
+label_weekly:
+  en: "Weekly"
+  zh-CN: "每周"
+  zh-TW: "每週"
+
+label_credits:
+  en: "Credits"
+  zh-CN: "余额"
+  zh-TW: "餘額"
+
+label_subquotas:
+  en: "Sub-quotas"
+  zh-CN: "子配额"
+  zh-TW: "子配額"

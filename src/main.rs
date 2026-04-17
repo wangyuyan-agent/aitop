@@ -1,9 +1,15 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod i18n;
+mod lang;
 mod providers;
 mod ui;
+
+use lang::Lang;
+
+// Load all translations from `locales/*.yml` at compile time.
+// Fallback locale = English, matching `[package.metadata.i18n] default-locale`.
+rust_i18n::i18n!("locales", fallback = "en");
 
 #[derive(Parser, Debug)]
 #[command(
@@ -21,7 +27,7 @@ struct Cli {
     #[arg(long, global = true, default_value = "warn")]
     log_level: String,
 
-    /// 界面语言 / UI language (zh|en). Defaults to LANG/AITOP_LANG.
+    /// 界面语言 / UI language (en|zh-CN|zh-TW). Defaults to AITOP_LANG / LANG.
     #[arg(long, global = true, value_name = "LANG")]
     lang: Option<String>,
 
@@ -66,9 +72,9 @@ async fn main() -> Result<()> {
     let lang = cli
         .lang
         .as_deref()
-        .and_then(i18n::Lang::parse)
-        .unwrap_or_else(i18n::Lang::detect);
-    i18n::set(lang);
+        .and_then(Lang::parse)
+        .unwrap_or_else(Lang::detect);
+    lang.apply();
 
     match cli.cmd {
         None => ui::run_tui(cli.all).await,
