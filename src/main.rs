@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod i18n;
 mod providers;
 mod ui;
 
@@ -16,9 +17,17 @@ mod ui;
 "
 )]
 struct Cli {
-    /// 日志级别（trace|debug|info|warn|error）
+    /// 日志级别 / log level (trace|debug|info|warn|error)
     #[arg(long, global = true, default_value = "warn")]
     log_level: String,
+
+    /// 界面语言 / UI language (zh|en). Defaults to LANG/AITOP_LANG.
+    #[arg(long, global = true, value_name = "LANG")]
+    lang: Option<String>,
+
+    /// 显示全部 provider（含未配置的）/ show every provider, even unconfigured
+    #[arg(long)]
+    all: bool,
 
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -28,13 +37,13 @@ struct Cli {
 enum Cmd {
     /// 单次拉取并以文本打印后退出
     Oneshot {
-        /// 指定 provider（逗号分隔，或 `all`）
-        #[arg(long, default_value = "all")]
+        /// provider 选择：`auto`（本地已配置）/ `all` / 逗号分隔 id
+        #[arg(long, default_value = "auto")]
         provider: String,
     },
     /// 以 JSON 输出（适合脚本/CI）
     Json {
-        #[arg(long, default_value = "all")]
+        #[arg(long, default_value = "auto")]
         provider: String,
         /// pretty 打印
         #[arg(long)]
@@ -54,8 +63,15 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(&cli.log_level);
 
+    let lang = cli
+        .lang
+        .as_deref()
+        .and_then(i18n::Lang::parse)
+        .unwrap_or_else(i18n::Lang::detect);
+    i18n::set(lang);
+
     match cli.cmd {
-        None => ui::run_tui().await,
+        None => ui::run_tui(cli.all).await,
         Some(Cmd::Oneshot { provider }) => providers::oneshot_text(&provider).await,
         Some(Cmd::Json { provider, pretty }) => providers::oneshot_json(&provider, pretty).await,
         Some(Cmd::Watch { provider, interval }) => ui::run_watch(&provider, interval).await,

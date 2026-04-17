@@ -7,7 +7,7 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
-use super::{Provider, Usage};
+use super::{Availability, Provider, Usage};
 
 #[derive(Default)]
 pub struct Claude;
@@ -16,6 +16,10 @@ pub struct Claude;
 impl Provider for Claude {
     fn id(&self) -> &'static str {
         "claude"
+    }
+
+    fn detect(&self) -> Availability {
+        Availability::Missing("尚未实现（TODO：Keychain OAuth → claude.ai API）".into())
     }
 
     async fn fetch(&self) -> Result<Usage> {

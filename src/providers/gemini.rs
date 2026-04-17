@@ -18,7 +18,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Provider, SubQuota, Usage};
+use super::{Availability, Provider, SubQuota, Usage};
 
 const QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 const LOAD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
@@ -43,6 +43,31 @@ struct Creds {
 impl Provider for Gemini {
     fn id(&self) -> &'static str {
         "gemini"
+    }
+
+    fn detect(&self) -> Availability {
+        let creds = gemini_dir().join("oauth_creds.json");
+        if !creds.exists() {
+            return Availability::Missing(format!("缺少 {}（请先运行 gemini CLI 登录）", creds.display()));
+        }
+        // settings.json 若存在且强制 api-key/vertex-ai 则视为不支持
+        let settings = gemini_dir().join("settings.json");
+        if settings.exists() {
+            if let Ok(text) = std::fs::read_to_string(&settings) {
+                if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                    let t = v
+                        .get("security")
+                        .and_then(|x| x.get("auth"))
+                        .and_then(|x| x.get("selectedType"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if t == "api-key" || t == "vertex-ai" {
+                        return Availability::Missing(format!("Gemini 配置为 {}，仅支持 OAuth", t));
+                    }
+                }
+            }
+        }
+        Availability::Ready
     }
 
     async fn fetch(&self) -> Result<Usage> {

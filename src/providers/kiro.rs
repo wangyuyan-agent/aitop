@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use regex::Regex;
 
-use super::{Credits, Provider, Usage, Window};
+use super::{Availability, Credits, Provider, Usage, Window};
 
 #[derive(Default)]
 pub struct Kiro;
@@ -18,6 +18,15 @@ pub struct Kiro;
 impl Provider for Kiro {
     fn id(&self) -> &'static str {
         "kiro"
+    }
+
+    fn detect(&self) -> Availability {
+        let bin = std::env::var("KIRO_CLI_BIN").unwrap_or_else(|_| "kiro-cli".into());
+        if which::which(&bin).is_ok() {
+            Availability::Ready
+        } else {
+            Availability::Missing(format!("{} 不在 PATH（可通过 KIRO_CLI_BIN 指定）", bin))
+        }
     }
 
     async fn fetch(&self) -> Result<Usage> {

@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::Utc;
 
-use super::{Credits, Provider, Usage};
+use super::{Availability, Credits, Provider, Usage};
 
 #[derive(Default)]
 pub struct OpenRouter;
@@ -15,6 +15,13 @@ pub struct OpenRouter;
 impl Provider for OpenRouter {
     fn id(&self) -> &'static str {
         "openrouter"
+    }
+
+    fn detect(&self) -> Availability {
+        match std::env::var("OPENROUTER_API_KEY") {
+            Ok(v) if !v.trim().is_empty() => Availability::Ready,
+            _ => Availability::Missing("未设置环境变量 OPENROUTER_API_KEY".into()),
+        }
     }
 
     async fn fetch(&self) -> Result<Usage> {

@@ -7,7 +7,7 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
-use super::{Provider, Usage};
+use super::{Availability, Provider, Usage};
 
 #[derive(Default)]
 pub struct Codex;
@@ -16,6 +16,10 @@ pub struct Codex;
 impl Provider for Codex {
     fn id(&self) -> &'static str {
         "codex"
+    }
+
+    fn detect(&self) -> Availability {
+        Availability::Missing("尚未实现（TODO：浏览器 cookie jar + dashboard API）".into())
     }
 
     async fn fetch(&self) -> Result<Usage> {

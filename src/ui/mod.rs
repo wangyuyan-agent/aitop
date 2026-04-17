@@ -27,6 +27,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 use tokio::sync::mpsc;
 
+use crate::i18n;
 use crate::providers::{self, Provider, Usage};
 
 struct App {
@@ -102,10 +103,20 @@ impl App {
     }
 }
 
-pub async fn run_tui() -> Result<()> {
-    let providers = providers::all_providers();
+pub async fn run_tui(show_all: bool) -> Result<()> {
+    let providers = if show_all {
+        providers::all_providers()
+    } else {
+        let avail = providers::available_providers();
+        if avail.is_empty() {
+            eprintln!("{}", i18n::no_detected_providers());
+            providers::all_providers()
+        } else {
+            avail
+        }
+    };
     if providers.is_empty() {
-        eprintln!("[aitop] 没有可用的 provider");
+        eprintln!("{}", i18n::no_providers());
         return Ok(());
     }
     let mut app = App::new(providers);
@@ -212,21 +223,24 @@ fn render(f: &mut Frame, app: &App) {
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let elapsed = (Utc::now() - app.last_refresh_started).num_seconds();
     let refresh_label = if app.in_flight > 0 {
-        format!("refreshing… ({} 剩) ", app.in_flight)
+        i18n::status_refreshing(app.in_flight)
     } else {
-        format!("updated {}s ago", elapsed.max(0))
+        i18n::status_updated_ago(elapsed)
     };
     let line = Line::from(vec![
-        Span::styled("aitop", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            i18n::app_title(),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  ·  "),
         Span::styled(refresh_label, Style::default().fg(Color::Gray)),
         Span::raw("  ·  "),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(" quit  "),
+        Span::raw(format!(" {}  ", i18n::hint_quit())),
         Span::styled("r", Style::default().fg(Color::Yellow)),
-        Span::raw(" refresh  "),
+        Span::raw(format!(" {}  ", i18n::hint_refresh())),
         Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
-        Span::raw(" nav"),
+        Span::raw(format!(" {}", i18n::hint_nav())),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }

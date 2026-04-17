@@ -5,7 +5,7 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
-use super::{Provider, Usage};
+use super::{Availability, Provider, Usage};
 
 #[derive(Default)]
 pub struct Copilot;
@@ -14,6 +14,10 @@ pub struct Copilot;
 impl Provider for Copilot {
     fn id(&self) -> &'static str {
         "copilot"
+    }
+
+    fn detect(&self) -> Availability {
+        Availability::Missing("尚未实现（TODO：device flow + internal usage API）".into())
     }
 
     async fn fetch(&self) -> Result<Usage> {
