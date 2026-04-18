@@ -36,10 +36,7 @@ impl Lang {
     /// so callers can fall back to [`detect`](Self::detect).
     pub fn parse(s: &str) -> Option<Self> {
         // Normalize: lower-case, collapse separators so "zh_TW" == "zh-tw" == "zhtw".
-        let norm = s
-            .trim()
-            .to_lowercase()
-            .replace(['_', '.'], "-");
+        let norm = s.trim().to_lowercase().replace(['_', '.'], "-");
         match norm.as_str() {
             "en" | "en-us" | "en-gb" | "english" => Some(Lang::En),
             "zh" | "zh-cn" | "zh-hans" | "zh-hans-cn" | "chinese" | "cn" | "zhcn" => {
@@ -56,9 +53,10 @@ impl Lang {
     /// Default: English.
     pub fn detect() -> Self {
         if let Ok(v) = std::env::var("AITOP_LANG")
-            && let Some(l) = Self::parse(&v) {
-                return l;
-            }
+            && let Some(l) = Self::parse(&v)
+        {
+            return l;
+        }
         let lang = std::env::var("LANG").unwrap_or_default();
         let lc_all = std::env::var("LC_ALL").unwrap_or_default();
         let joined = format!("{} {}", lang, lc_all).to_lowercase();

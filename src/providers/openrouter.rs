@@ -64,7 +64,10 @@ fn build_usage(resp: &Value, now: DateTime<Utc>) -> Result<Usage> {
     Ok(Usage {
         provider: "OpenRouter".to_string(),
         source: "api".to_string(),
-        account: data.get("label").and_then(Value::as_str).map(str::to_string),
+        account: data
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         plan: None,
         session: None,
         weekly: None,

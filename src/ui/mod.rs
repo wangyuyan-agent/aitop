@@ -177,25 +177,24 @@ async fn event_loop(
 
         let timeout = tick.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)?
-            && let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                    KeyCode::Char('r') => {
-                        *rx = app.spawn_refresh();
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-                    KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
-                    KeyCode::Char('g') => app.selected = 0,
-                    KeyCode::Char('G') => {
-                        app.selected = app.states.len().saturating_sub(1)
-                    }
-                    _ => {}
-                }
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
             }
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                KeyCode::Char('r') => {
+                    *rx = app.spawn_refresh();
+                }
+                KeyCode::Down | KeyCode::Char('j') => app.select_next(),
+                KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
+                KeyCode::Char('g') => app.selected = 0,
+                KeyCode::Char('G') => app.selected = app.states.len().saturating_sub(1),
+                _ => {}
+            }
+        }
 
         if last_tick.elapsed() >= tick {
             last_tick = Instant::now();
@@ -230,7 +229,9 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let line = Line::from(vec![
         Span::styled(
             "aitop",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  ·  "),
         Span::styled(refresh_label, Style::default().fg(Color::Gray)),
@@ -343,7 +344,9 @@ fn render_card(f: &mut Frame, area: Rect, s: &ProviderState, selected: bool) {
         None => Color::Gray,
     };
     let border_style = if selected {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -352,7 +355,9 @@ fn render_card(f: &mut Frame, area: Rect, s: &ProviderState, selected: bool) {
         Span::styled(prefix, Style::default().fg(Color::Cyan)),
         Span::styled(
             provider_display_name(&s.id),
-            Style::default().fg(title_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
 
@@ -438,7 +443,9 @@ fn render_usage(f: &mut Frame, area: Rect, u: &Usage) {
                 Span::raw("  credits: "),
                 Span::styled(
                     format!("{:.2}", c.remaining),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(format!(" / {:.2} {}", total, c.unit)),
             ]),
@@ -461,8 +468,13 @@ fn render_usage(f: &mut Frame, area: Rect, u: &Usage) {
     }
     if let Some(n) = &u.note {
         let line = Line::from(Span::styled(
-            format!("  note: {}", truncate(n, area.width.saturating_sub(8) as usize)),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            format!(
+                "  note: {}",
+                truncate(n, area.width.saturating_sub(8) as usize)
+            ),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ));
         f.render_widget(Paragraph::new(line), chunks[idx]);
     }
@@ -477,12 +489,17 @@ fn build_meta_line(u: &Usage) -> Line<'_> {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             acc.as_str(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ));
     }
     if let Some(plan) = &u.plan {
         spans.push(Span::raw("  ["));
-        spans.push(Span::styled(plan.as_str(), Style::default().fg(Color::Magenta)));
+        spans.push(Span::styled(
+            plan.as_str(),
+            Style::default().fg(Color::Magenta),
+        ));
         spans.push(Span::raw("]"));
     }
     Line::from(spans)

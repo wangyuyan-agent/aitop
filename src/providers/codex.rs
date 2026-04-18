@@ -79,10 +79,10 @@ impl Provider for Codex {
 
     async fn fetch(&self) -> Result<Usage> {
         let path = auth_path();
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("读取 {:?} 失败", path))?;
-        let auth: AuthFile = serde_json::from_str(&text)
-            .with_context(|| format!("解析 {:?} 失败", path))?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("读取 {:?} 失败", path))?;
+        let auth: AuthFile =
+            serde_json::from_str(&text).with_context(|| format!("解析 {:?} 失败", path))?;
 
         let tokens = auth
             .tokens
@@ -95,7 +95,10 @@ impl Provider for Codex {
         let claims = decode_jwt_claims(id_token)
             .ok_or_else(|| anyhow!("id_token 非法 JWT（无法 base64/JSON 解析）"))?;
 
-        let email = claims.get("email").and_then(Value::as_str).map(str::to_string);
+        let email = claims
+            .get("email")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         // 自定义 claim namespace：https://api.openai.com/auth
         let openai_auth = claims
@@ -128,10 +131,11 @@ impl Provider for Codex {
             }
         }
         if let Some(refresh) = auth.last_refresh.as_deref()
-            && let Ok(ts) = DateTime::parse_from_rfc3339(refresh) {
-                let ago = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
-                note_parts.push(format!("refreshed {}h ago", ago.num_hours()));
-            }
+            && let Ok(ts) = DateTime::parse_from_rfc3339(refresh)
+        {
+            let ago = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
+            note_parts.push(format!("refreshed {}h ago", ago.num_hours()));
+        }
         note_parts.push("usage API 未公开".to_string());
 
         Ok(Usage {
@@ -150,7 +154,10 @@ impl Provider for Codex {
 }
 
 fn auth_path() -> PathBuf {
-    auth_path_with(std::env::var("CODEX_HOME").ok().as_deref(), dirs::home_dir())
+    auth_path_with(
+        std::env::var("CODEX_HOME").ok().as_deref(),
+        dirs::home_dir(),
+    )
 }
 
 /// `auth_path` 的纯函数版本，便于 unit test 不污染全局环境变量。
@@ -205,9 +212,15 @@ mod tests {
             r#"{"email":"user@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus","chatgpt_account_id":"a-b-c"}}"#,
         );
         let claims = decode_jwt_claims(&token).unwrap();
-        assert_eq!(claims.get("email").and_then(Value::as_str), Some("user@example.com"));
+        assert_eq!(
+            claims.get("email").and_then(Value::as_str),
+            Some("user@example.com")
+        );
         let oa = claims.get("https://api.openai.com/auth").unwrap();
-        assert_eq!(oa.get("chatgpt_plan_type").and_then(Value::as_str), Some("plus"));
+        assert_eq!(
+            oa.get("chatgpt_plan_type").and_then(Value::as_str),
+            Some("plus")
+        );
     }
 
     #[test]

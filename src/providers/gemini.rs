@@ -48,23 +48,27 @@ impl Provider for Gemini {
     fn detect(&self) -> Availability {
         let creds = gemini_dir().join("oauth_creds.json");
         if !creds.exists() {
-            return Availability::Missing(format!("缺少 {}（请先运行 gemini CLI 登录）", creds.display()));
+            return Availability::Missing(format!(
+                "缺少 {}（请先运行 gemini CLI 登录）",
+                creds.display()
+            ));
         }
         // settings.json 若存在且强制 api-key/vertex-ai 则视为不支持
         let settings = gemini_dir().join("settings.json");
         if settings.exists()
             && let Ok(text) = std::fs::read_to_string(&settings)
-                && let Ok(v) = serde_json::from_str::<Value>(&text) {
-                    let t = v
-                        .get("security")
-                        .and_then(|x| x.get("auth"))
-                        .and_then(|x| x.get("selectedType"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    if t == "api-key" || t == "vertex-ai" {
-                        return Availability::Missing(format!("Gemini 配置为 {}，仅支持 OAuth", t));
-                    }
-                }
+            && let Ok(v) = serde_json::from_str::<Value>(&text)
+        {
+            let t = v
+                .get("security")
+                .and_then(|x| x.get("auth"))
+                .and_then(|x| x.get("selectedType"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if t == "api-key" || t == "vertex-ai" {
+                return Availability::Missing(format!("Gemini 配置为 {}，仅支持 OAuth", t));
+            }
+        }
         Availability::Ready
     }
 
@@ -77,7 +81,8 @@ impl Provider for Gemini {
                 creds_path
             )
         })?;
-        let mut creds: Creds = serde_json::from_str(&creds_text).context("解析 oauth_creds.json 失败")?;
+        let mut creds: Creds =
+            serde_json::from_str(&creds_text).context("解析 oauth_creds.json 失败")?;
 
         let token = ensure_fresh_token(&mut creds, &creds_path).await?;
         let claims = jwt_decode_claims(creds.id_token.as_deref().unwrap_or(""));
@@ -88,7 +93,9 @@ impl Provider for Gemini {
         let workspace_domain = claims.get("hd").and_then(Value::as_str).map(str::to_string);
 
         let client = http_client()?;
-        let (tier_id, project_id) = load_code_assist(&client, &token).await.unwrap_or((None, None));
+        let (tier_id, project_id) = load_code_assist(&client, &token)
+            .await
+            .unwrap_or((None, None));
         let project_id = match project_id {
             Some(p) => Some(p),
             None => discover_project(&client, &token).await.ok().flatten(),
@@ -255,11 +262,12 @@ fn extract_cli_oauth_secrets() -> Option<(String, String)> {
         if d.is_dir() {
             let pat = d.join("chunk-*.js");
             if let Some(p) = pat.to_str()
-                && let Ok(g) = glob::glob(p) {
-                    for entry in g.flatten() {
-                        candidates.push(entry);
-                    }
+                && let Ok(g) = glob::glob(p)
+            {
+                for entry in g.flatten() {
+                    candidates.push(entry);
                 }
+            }
         }
     }
 
@@ -278,7 +286,10 @@ fn extract_cli_oauth_secrets() -> Option<(String, String)> {
     None
 }
 
-async fn load_code_assist(client: &Client, token: &str) -> Result<(Option<String>, Option<String>)> {
+async fn load_code_assist(
+    client: &Client,
+    token: &str,
+) -> Result<(Option<String>, Option<String>)> {
     let body = serde_json::json!({
         "metadata": { "ideType": "GEMINI_CLI", "pluginType": "GEMINI" }
     });
@@ -379,7 +390,10 @@ fn parse_quota_buckets(buckets: &[Value]) -> Vec<SubQuota> {
             Some(f) => f,
             None => continue,
         };
-        let reset = b.get("resetTime").and_then(Value::as_str).map(str::to_string);
+        let reset = b
+            .get("resetTime")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         per_model
             .entry(mid)
             .and_modify(|e| {
@@ -412,9 +426,15 @@ mod tests {
     #[test]
     fn tier_label_maps_all_known_combos() {
         assert_eq!(tier_label(Some("standard-tier"), None), "Paid");
-        assert_eq!(tier_label(Some("standard-tier"), Some("example.com")), "Paid");
+        assert_eq!(
+            tier_label(Some("standard-tier"), Some("example.com")),
+            "Paid"
+        );
         assert_eq!(tier_label(Some("free-tier"), None), "Free");
-        assert_eq!(tier_label(Some("free-tier"), Some("example.com")), "Workspace");
+        assert_eq!(
+            tier_label(Some("free-tier"), Some("example.com")),
+            "Workspace"
+        );
         assert_eq!(tier_label(Some("legacy-tier"), None), "Legacy");
         assert_eq!(tier_label(None, None), "Unknown");
         assert_eq!(tier_label(Some("mystery-tier"), None), "Unknown");
@@ -453,8 +473,8 @@ mod tests {
             json!({ "modelId": "gemini-pro", "remainingFraction": 0.8, "resetTime": "2026-05-01T00:00:00Z" }),
             json!({ "modelId": "gemini-pro", "remainingFraction": 0.2, "resetTime": "2026-05-01T00:00:00Z" }),
             json!({ "modelId": "gemini-flash", "remainingFraction": 0.5 }),
-            json!({ "modelId": "no-fraction" }),                 // 缺 fraction 丢弃
-            json!({ "remainingFraction": 0.1 }),                 // 缺 modelId 丢弃
+            json!({ "modelId": "no-fraction" }), // 缺 fraction 丢弃
+            json!({ "remainingFraction": 0.1 }), // 缺 modelId 丢弃
         ];
         let out = parse_quota_buckets(&buckets);
         assert_eq!(out.len(), 2);

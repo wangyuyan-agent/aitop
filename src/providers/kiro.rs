@@ -131,8 +131,13 @@ fn parse_usage_output(text: &str) -> ParsedKiro {
     let session_pct = credits
         .as_ref()
         .and_then(|c| {
-            c.total
-                .map(|t| if t > 0.0 { (1.0 - c.remaining / t) * 100.0 } else { 0.0 })
+            c.total.map(|t| {
+                if t > 0.0 {
+                    (1.0 - c.remaining / t) * 100.0
+                } else {
+                    0.0
+                }
+            })
         })
         .or_else(|| {
             re_pct
@@ -153,7 +158,11 @@ fn parse_usage_output(text: &str) -> ParsedKiro {
         .and_then(|l| re_plan.captures(l))
         .map(|c| c[1].trim().to_string());
 
-    ParsedKiro { plan, session, credits }
+    ParsedKiro {
+        plan,
+        session,
+        credits,
+    }
 }
 
 /// 剥离 ANSI CSI 序列，保留纯文本。只处理 `\x1b[...<letter>`。
@@ -221,6 +230,10 @@ mod tests {
                     120%\n";
         let p = parse_usage_output(text);
         let s = p.session.unwrap();
-        assert!(s.used_percent <= 100.0, "应被 clamp 到 100，得到 {}", s.used_percent);
+        assert!(
+            s.used_percent <= 100.0,
+            "应被 clamp 到 100，得到 {}",
+            s.used_percent
+        );
     }
 }

@@ -54,7 +54,8 @@ impl Provider for Claude {
             return Availability::Ready;
         }
         Availability::Missing(
-            "未找到 Keychain `Claude Code-credentials` 或 ~/.claude/projects；请先登录 Claude Code".into(),
+            "未找到 Keychain `Claude Code-credentials` 或 ~/.claude/projects；请先登录 Claude Code"
+                .into(),
         )
     }
 
@@ -132,9 +133,18 @@ struct PlanLimits {
 fn plan_limits(plan: &str) -> Option<PlanLimits> {
     let key = plan.to_lowercase().replace('-', "_");
     match key.as_str() {
-        "pro" => Some(PlanLimits { session: 45, weekly: 240 }),
-        "max" | "max_5x" | "max5x" => Some(PlanLimits { session: 225, weekly: 1200 }),
-        "max_20x" | "max20x" => Some(PlanLimits { session: 900, weekly: 4800 }),
+        "pro" => Some(PlanLimits {
+            session: 45,
+            weekly: 240,
+        }),
+        "max" | "max_5x" | "max5x" => Some(PlanLimits {
+            session: 225,
+            weekly: 1200,
+        }),
+        "max_20x" | "max20x" => Some(PlanLimits {
+            session: 900,
+            weekly: 4800,
+        }),
         _ => None,
     }
 }
@@ -270,10 +280,11 @@ fn scan_projects() -> Option<ScanStats> {
             // mtime 早于 weekly_cutoff+1h 的整文件跳过，减少 IO
             if let Ok(meta) = entry.metadata()
                 && let Ok(mtime) = meta.modified()
-                    && let Ok(dur) = mtime.elapsed()
-                        && dur > std::time::Duration::from_secs(7 * 24 * 3600 + 3600) {
-                            continue;
-                        }
+                && let Ok(dur) = mtime.elapsed()
+                && dur > std::time::Duration::from_secs(7 * 24 * 3600 + 3600)
+            {
+                continue;
+            }
             saw_any |= scan_file(&entry, session_cutoff, weekly_cutoff, &mut stats);
         }
     }

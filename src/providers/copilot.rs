@@ -199,7 +199,11 @@ fn build_sub_quotas(copilot: &Value) -> (Vec<SubQuota>, Option<DateTime<Utc>>) {
     // 路径 A：付费用户的 quota_snapshots
     if let Some(snap) = copilot.get("quota_snapshots").and_then(Value::as_object) {
         for (label, meta) in snap {
-            if meta.get("unlimited").and_then(Value::as_bool).unwrap_or(false) {
+            if meta
+                .get("unlimited")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 continue;
             }
             let Some(pct_remain) = meta.get("percent_remaining").and_then(Value::as_f64) else {
@@ -216,7 +220,9 @@ fn build_sub_quotas(copilot: &Value) -> (Vec<SubQuota>, Option<DateTime<Utc>>) {
 
     // 路径 B：免费限量用户 limited_user_quotas（剩余） / monthly_quotas（总额）
     if out.is_empty() {
-        let remaining = copilot.get("limited_user_quotas").and_then(Value::as_object);
+        let remaining = copilot
+            .get("limited_user_quotas")
+            .and_then(Value::as_object);
         let total = copilot.get("monthly_quotas").and_then(Value::as_object);
         if let (Some(rem), Some(tot)) = (remaining, total) {
             for (label, tot_v) in tot {
@@ -312,7 +318,10 @@ mod tests {
         assert_eq!(reset.format("%Y-%m-%d").to_string(), "2025-11-01");
 
         // plan label
-        assert_eq!(build_plan_label(&payload).as_deref(), Some("pro (copilot_pro)"));
+        assert_eq!(
+            build_plan_label(&payload).as_deref(),
+            Some("pro (copilot_pro)")
+        );
     }
 
     #[test]
@@ -357,7 +366,10 @@ mod tests {
     fn plan_label_fallbacks() {
         // copilot_plan 缺失时 fall back 到 access_type_sku
         let only_sku = json!({ "access_type_sku": "business_seat" });
-        assert_eq!(build_plan_label(&only_sku).as_deref(), Some("business_seat"));
+        assert_eq!(
+            build_plan_label(&only_sku).as_deref(),
+            Some("business_seat")
+        );
 
         // 两字段相同 → 不做重复拼接
         let same = json!({ "copilot_plan": "pro", "access_type_sku": "pro" });
