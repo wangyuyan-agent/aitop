@@ -150,11 +150,15 @@ impl Provider for Codex {
 }
 
 fn auth_path() -> PathBuf {
-    if let Ok(p) = std::env::var("CODEX_HOME") {
+    auth_path_with(std::env::var("CODEX_HOME").ok().as_deref(), dirs::home_dir())
+}
+
+/// `auth_path` 的纯函数版本，便于 unit test 不污染全局环境变量。
+fn auth_path_with(codex_home: Option<&str>, home: Option<PathBuf>) -> PathBuf {
+    if let Some(p) = codex_home {
         return PathBuf::from(p).join("auth.json");
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/"))
+    home.unwrap_or_else(|| PathBuf::from("/"))
         .join(".codex")
         .join("auth.json")
 }
@@ -180,5 +184,66 @@ fn short_id(s: &str) -> String {
     } else {
         let head: String = s.chars().take(8).collect();
         format!("{}…", head)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use std::path::Path;
+
+    fn make_jwt(payload_json: &str) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+        format!("{header}.{payload}.")
+    }
+
+    #[test]
+    fn decode_jwt_claims_extracts_openai_namespace() {
+        let token = make_jwt(
+            r#"{"email":"user@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus","chatgpt_account_id":"a-b-c"}}"#,
+        );
+        let claims = decode_jwt_claims(&token).unwrap();
+        assert_eq!(claims.get("email").and_then(Value::as_str), Some("user@example.com"));
+        let oa = claims.get("https://api.openai.com/auth").unwrap();
+        assert_eq!(oa.get("chatgpt_plan_type").and_then(Value::as_str), Some("plus"));
+    }
+
+    #[test]
+    fn decode_jwt_claims_rejects_malformed() {
+        assert!(decode_jwt_claims("").is_none());
+        assert!(decode_jwt_claims("only-one-part").is_none());
+        assert!(decode_jwt_claims("bad.!!not-base64!!.sig").is_none());
+        // payload 能 base64 解码但不是 object
+        let not_obj = URL_SAFE_NO_PAD.encode(b"\"just a string\"");
+        assert!(decode_jwt_claims(&format!("h.{not_obj}.s")).is_none());
+    }
+
+    #[test]
+    fn short_id_keeps_short_ids_and_truncates_long() {
+        assert_eq!(short_id(""), "");
+        assert_eq!(short_id("abcd"), "abcd");
+        assert_eq!(short_id("0123456789"), "0123456789"); // 恰好 10，保留
+        assert_eq!(short_id("0123456789abcdef"), "01234567…");
+    }
+
+    #[test]
+    fn auth_path_respects_codex_home_env() {
+        let p = auth_path_with(Some("/tmp/xdg/codex"), Some(PathBuf::from("/home/x")));
+        assert_eq!(p, Path::new("/tmp/xdg/codex/auth.json"));
+    }
+
+    #[test]
+    fn auth_path_falls_back_to_home_when_no_codex_home() {
+        let p = auth_path_with(None, Some(PathBuf::from("/home/icex")));
+        assert_eq!(p, Path::new("/home/icex/.codex/auth.json"));
+    }
+
+    #[test]
+    fn auth_path_handles_missing_home() {
+        // 没有 CODEX_HOME 也没有 home_dir —— 落到 `/.codex/auth.json`，至少不 panic
+        let p = auth_path_with(None, None);
+        assert_eq!(p, Path::new("/.codex/auth.json"));
     }
 }

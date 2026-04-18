@@ -4,8 +4,9 @@
 //! TUI 和 CLI（oneshot / json）都基于这里的数据建模。
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_i18n::t;
@@ -17,6 +18,26 @@ pub mod copilot;
 pub mod gemini;
 pub mod kiro;
 pub mod openrouter;
+
+/// 所有 provider 共享的 HTTP 请求 UA。GitHub 等家要求 UA 非空，这里给一个可追溯的串。
+pub(crate) const HTTP_USER_AGENT: &str = concat!(
+    "aitop/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/wangyuyan-agent/aitop)"
+);
+
+/// 所有 provider 共享的 HTTP 请求超时（总超时 = 连接 + 读）。
+/// 目标：任何单家 provider 卡住也不拖累 TUI 的并发刷新。
+pub(crate) const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 构造一个带统一 UA / 超时的 `reqwest::Client`。各 provider 自己的 HTTP 调用都走这里。
+pub(crate) fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(HTTP_USER_AGENT)
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .context("构建 HTTP client 失败")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Window {

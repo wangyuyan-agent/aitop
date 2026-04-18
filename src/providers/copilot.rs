@@ -39,19 +39,16 @@
 //!
 //! 两种形态都映射到 `sub_quotas`；plan 名取 `copilot_plan`（fallback `access_type_sku`）。
 
-use std::time::Duration;
-
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::Client;
 use serde_json::Value;
 
-use super::{Availability, Provider, SubQuota, Usage};
+use super::{Availability, Provider, SubQuota, Usage, http_client};
 
 const USER_URL: &str = "https://api.github.com/user";
 const COPILOT_USER_URL: &str = "https://api.github.com/copilot_internal/user";
-const UA: &str = concat!("aitop/", env!("CARGO_PKG_VERSION"), " (+https://github.com/wangyuyan-agent/aitop)");
 
 #[derive(Default)]
 pub struct Copilot;
@@ -77,7 +74,7 @@ impl Provider for Copilot {
 
     async fn fetch(&self) -> Result<Usage> {
         let token = resolve_token().await?;
-        let client = build_client()?;
+        let client = http_client()?;
 
         // Copilot 配额
         let copilot: Value = client
@@ -173,14 +170,6 @@ async fn fetch_login(client: &Client, token: &str) -> Option<String> {
         .ok()?;
     let v: Value = resp.json().await.ok()?;
     v.get("login").and_then(Value::as_str).map(str::to_string)
-}
-
-fn build_client() -> Result<Client> {
-    Client::builder()
-        .user_agent(UA)
-        .timeout(Duration::from_secs(15))
-        .build()
-        .context("构建 HTTP client 失败")
 }
 
 /// `copilot_plan` 优先，其次 `access_type_sku`；两者不同时拼成 `plan (sku)`。

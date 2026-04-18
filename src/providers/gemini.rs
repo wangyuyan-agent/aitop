@@ -18,7 +18,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Availability, Provider, SubQuota, Usage};
+use super::{Availability, Provider, SubQuota, Usage, http_client};
 
 const QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 const LOAD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
@@ -87,7 +87,7 @@ impl Provider for Gemini {
             .map(str::to_string);
         let workspace_domain = claims.get("hd").and_then(Value::as_str).map(str::to_string);
 
-        let client = Client::new();
+        let client = http_client()?;
         let (tier_id, project_id) = load_code_assist(&client, &token).await.unwrap_or((None, None));
         let project_id = match project_id {
             Some(p) => Some(p),
@@ -113,40 +113,7 @@ impl Provider for Gemini {
             .get("buckets")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow!("quota 响应缺 buckets"))?;
-
-        // 每个 model 取最低 remainingFraction
-        use std::collections::BTreeMap;
-        let mut per_model: BTreeMap<String, (f64, Option<String>)> = BTreeMap::new();
-        for b in buckets {
-            let mid = match b.get("modelId").and_then(Value::as_str) {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            let frac = match b.get("remainingFraction").and_then(Value::as_f64) {
-                Some(f) => f,
-                None => continue,
-            };
-            let reset = b.get("resetTime").and_then(Value::as_str).map(str::to_string);
-            per_model
-                .entry(mid)
-                .and_modify(|e| {
-                    if frac < e.0 {
-                        *e = (frac, reset.clone());
-                    }
-                })
-                .or_insert((frac, reset));
-        }
-
-        let mut sub_quotas: Vec<SubQuota> = per_model
-            .into_iter()
-            .map(|(label, (frac, reset))| SubQuota {
-                label,
-                used_percent: (100.0 - frac * 100.0).clamp(0.0, 100.0),
-                resets_at: reset.and_then(|s| parse_iso(&s)),
-            })
-            .collect();
-        // 按 used_percent 倒序，最紧的在前
-        sub_quotas.sort_by(|a, b| b.used_percent.partial_cmp(&a.used_percent).unwrap());
+        let sub_quotas = parse_quota_buckets(buckets);
 
         Ok(Usage {
             provider: "Gemini".to_string(),
@@ -234,7 +201,7 @@ async fn ensure_fresh_token(creds: &mut Creds, path: &Path) -> Result<String> {
         ("refresh_token", rt.as_str()),
         ("grant_type", "refresh_token"),
     ];
-    let resp: Value = Client::new()
+    let resp: Value = http_client()?
         .post(TOKEN_URL)
         .form(&params)
         .send()
@@ -393,4 +360,113 @@ fn parse_iso(s: &str) -> Option<DateTime<Utc>> {
         }
     }
     None
+}
+
+/// 把 `retrieveUserQuota` 响应里的 buckets 数组折叠为 `SubQuota`：
+/// - 同 `modelId` 多条 bucket → 取 `remainingFraction` 最小的那一条（最紧的限额）
+/// - 缺 `modelId` 或 `remainingFraction` 的条目跳过
+/// - `used_percent = (1 - remainingFraction) * 100`，clamp 到 [0, 100]
+/// - 结果按 `used_percent` 倒序排（最紧的在前）
+fn parse_quota_buckets(buckets: &[Value]) -> Vec<SubQuota> {
+    use std::collections::BTreeMap;
+    let mut per_model: BTreeMap<String, (f64, Option<String>)> = BTreeMap::new();
+    for b in buckets {
+        let mid = match b.get("modelId").and_then(Value::as_str) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let frac = match b.get("remainingFraction").and_then(Value::as_f64) {
+            Some(f) => f,
+            None => continue,
+        };
+        let reset = b.get("resetTime").and_then(Value::as_str).map(str::to_string);
+        per_model
+            .entry(mid)
+            .and_modify(|e| {
+                if frac < e.0 {
+                    *e = (frac, reset.clone());
+                }
+            })
+            .or_insert((frac, reset));
+    }
+
+    let mut out: Vec<SubQuota> = per_model
+        .into_iter()
+        .map(|(label, (frac, reset))| SubQuota {
+            label,
+            used_percent: (100.0 - frac * 100.0).clamp(0.0, 100.0),
+            resets_at: reset.and_then(|s| parse_iso(&s)),
+        })
+        .collect();
+    out.sort_by(|a, b| b.used_percent.partial_cmp(&a.used_percent).unwrap());
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use serde_json::json;
+
+    #[test]
+    fn tier_label_maps_all_known_combos() {
+        assert_eq!(tier_label(Some("standard-tier"), None), "Paid");
+        assert_eq!(tier_label(Some("standard-tier"), Some("example.com")), "Paid");
+        assert_eq!(tier_label(Some("free-tier"), None), "Free");
+        assert_eq!(tier_label(Some("free-tier"), Some("example.com")), "Workspace");
+        assert_eq!(tier_label(Some("legacy-tier"), None), "Legacy");
+        assert_eq!(tier_label(None, None), "Unknown");
+        assert_eq!(tier_label(Some("mystery-tier"), None), "Unknown");
+    }
+
+    #[test]
+    fn parse_iso_accepts_rfc3339_and_variants() {
+        assert!(parse_iso("2026-05-01T00:00:00Z").is_some());
+        assert!(parse_iso("2026-05-01T00:00:00.123Z").is_some());
+        assert!(parse_iso("2026-05-01T00:00:00+08:00").is_some());
+        assert!(parse_iso("not a date").is_none());
+        assert!(parse_iso("").is_none());
+    }
+
+    #[test]
+    fn jwt_decode_claims_reads_payload() {
+        // 构造一个合法 JWT（只需要 header.payload，signature 可空串）
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"email":"x@y.z","hd":"y.z"}"#);
+        let token = format!("{header}.{payload}.");
+        let claims = jwt_decode_claims(&token);
+        assert_eq!(claims.get("email").and_then(Value::as_str), Some("x@y.z"));
+        assert_eq!(claims.get("hd").and_then(Value::as_str), Some("y.z"));
+    }
+
+    #[test]
+    fn jwt_decode_claims_malformed_returns_empty() {
+        assert!(jwt_decode_claims("").is_empty());
+        assert!(jwt_decode_claims("no-dots").is_empty());
+        assert!(jwt_decode_claims("a.!!not-base64!!.c").is_empty());
+    }
+
+    #[test]
+    fn parse_quota_buckets_keeps_minimum_fraction_per_model() {
+        let buckets = vec![
+            json!({ "modelId": "gemini-pro", "remainingFraction": 0.8, "resetTime": "2026-05-01T00:00:00Z" }),
+            json!({ "modelId": "gemini-pro", "remainingFraction": 0.2, "resetTime": "2026-05-01T00:00:00Z" }),
+            json!({ "modelId": "gemini-flash", "remainingFraction": 0.5 }),
+            json!({ "modelId": "no-fraction" }),                 // 缺 fraction 丢弃
+            json!({ "remainingFraction": 0.1 }),                 // 缺 modelId 丢弃
+        ];
+        let out = parse_quota_buckets(&buckets);
+        assert_eq!(out.len(), 2);
+        // 最紧的（pro, 取 0.2）排在前面
+        assert_eq!(out[0].label, "gemini-pro");
+        assert!((out[0].used_percent - 80.0).abs() < 1e-9);
+        assert_eq!(out[1].label, "gemini-flash");
+        assert!((out[1].used_percent - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_quota_buckets_empty_input_returns_empty() {
+        assert!(parse_quota_buckets(&[]).is_empty());
+    }
 }

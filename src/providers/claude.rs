@@ -34,6 +34,7 @@ use serde_json::Value;
 
 use super::{Availability, Provider, Usage, Window};
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 #[derive(Default)]
@@ -192,6 +193,7 @@ fn read_credentials() -> Option<Value> {
     None
 }
 
+#[cfg(target_os = "macos")]
 fn read_keychain() -> Option<Value> {
     let out = std::process::Command::new("security")
         .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
@@ -203,6 +205,12 @@ fn read_keychain() -> Option<Value> {
     let raw = String::from_utf8(out.stdout).ok()?;
     let v: Value = serde_json::from_str(raw.trim()).ok()?;
     v.get("claudeAiOauth").cloned()
+}
+
+/// 非 macOS 平台没有 `security` CLI / Keychain —— 直接回落到 `~/.claude/.credentials.json`。
+#[cfg(not(target_os = "macos"))]
+fn read_keychain() -> Option<Value> {
+    None
 }
 
 fn read_credentials_file() -> Option<Value> {
