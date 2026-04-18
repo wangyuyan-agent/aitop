@@ -14,9 +14,11 @@
 - ✅ **OpenRouter** — API key → `/api/v1/auth/key`
 - ✅ **Gemini** — OAuth 凭证 + 自动刷新 + `retrieveUserQuota`（port 自 Python 版）
 - ✅ **Kiro** — 调 `kiro-cli chat --no-interactive /usage` 正则抽取
+- ✅ **Copilot** — GitHub token（env / `gh auth token`）→ `/copilot_internal/user`；付费（`quota_snapshots`）与免费限量（`monthly_quotas`）两种响应都兼容
+- ✅ **Claude** — macOS Keychain（`Claude Code-credentials`）取 plan / tier；扫 `~/.claude/projects/*.jsonl` 汇总过去 5h session + 7d weekly 的 token 数（Anthropic 不公开额度 → 不画进度条，只显示原始数值）
+- ✅ **Codex** — `~/.codex/auth.json` OAuth；解 `id_token` JWT 取 account / plan（ChatGPT 订阅用量 API 非公开 → 只显示 account + plan + token 刷新时间）
 - ✅ **TUI**（ratatui）— 卡片布局、并发刷新、实时更新
 - ✅ **多语言** — English / 简体中文 / 繁體中文，通过 `rust-i18n` + `locales/app.yml` 数据驱动
-- 🟡 Claude / Codex / Copilot — 仅留桩，欢迎 PR
 
 ## 安装
 
@@ -56,7 +58,9 @@ aitop watch gemini --interval 30
 | OpenRouter | env `OPENROUTER_API_KEY` | 存在且非空 |
 | Gemini | `~/.gemini/oauth_creds.json` | 文件存在（先跑 `gemini` CLI 登录） |
 | Kiro | `kiro-cli` 在 `PATH` 内 | `which kiro-cli` 成功（可用 `KIRO_CLI_BIN` 覆盖） |
-| Claude / Codex / Copilot | 未实现 | 始终标记为 `Missing` |
+| Copilot | env `GITHUB_TOKEN` / `GH_TOKEN` / `COPILOT_API_TOKEN`，或 `gh` 在 `PATH` | 环境变量已设 或 `which gh` 成功 |
+| Claude | macOS Keychain `Claude Code-credentials` / `~/.claude/.credentials.json` / `~/.claude/projects/` | 三者任一 |
+| Codex | `~/.codex/auth.json`（可用 `CODEX_HOME` 覆盖目录） | 文件存在且能解析出 `tokens` 字段 |
 
 `detect()` 仅做本地 I/O（不发网络），因此启动时能立刻过滤未配置的 provider。
 
