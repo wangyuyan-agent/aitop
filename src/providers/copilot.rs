@@ -273,3 +273,109 @@ fn parse_date(s: &str) -> Option<DateTime<Utc>> {
         .and_hms_opt(0, 0, 0)
         .map(|n| n.and_utc())
 }
+
+#[cfg(test)]
+mod tests {
+    //! 用合成 payload 覆盖两种响应形态，保证 Pro（quota_snapshots）与免费（monthly_quotas）
+    //! 两条路径都被测试；这样即使本机没有 Pro 订阅也能回归测试。
+
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn paid_plan_extracts_snapshots_and_skips_unlimited() {
+        // 典型付费（Pro / Business）响应：quota_snapshots 三个 key，其中 completions 是 unlimited。
+        let payload = json!({
+            "login": "octocat",
+            "access_type_sku": "copilot_pro",
+            "copilot_plan": "pro",
+            "quota_reset_date": "2025-11-01",
+            "quota_snapshots": {
+                "chat": {
+                    "entitlement": 300,
+                    "percent_remaining": 50.0,
+                    "remaining": 150,
+                    "unlimited": false
+                },
+                "completions": {
+                    "unlimited": true
+                },
+                "premium_interactions": {
+                    "entitlement": 300,
+                    "percent_remaining": 26.0,
+                    "remaining": 78,
+                    "unlimited": false
+                }
+            }
+        });
+        let (sq, reset) = build_sub_quotas(&payload);
+
+        // completions 被跳过；剩 chat + premium_interactions 两条
+        assert_eq!(sq.len(), 2);
+        // 最紧（used_percent 最高）排前面：premium = 74%, chat = 50%
+        assert_eq!(sq[0].label, "premium");
+        assert!((sq[0].used_percent - 74.0).abs() < 1e-6);
+        assert_eq!(sq[1].label, "chat");
+        assert!((sq[1].used_percent - 50.0).abs() < 1e-6);
+
+        // reset date 对齐 2025-11-01 00:00 UTC
+        let reset = reset.expect("应当有 quota_reset_date");
+        assert_eq!(reset.format("%Y-%m-%d").to_string(), "2025-11-01");
+
+        // plan label
+        assert_eq!(build_plan_label(&payload).as_deref(), Some("pro (copilot_pro)"));
+    }
+
+    #[test]
+    fn free_limited_plan_computes_from_monthly_quotas() {
+        // 免费限量（free_limited_copilot）响应：没有 quota_snapshots，走 monthly - limited 计算。
+        let payload = json!({
+            "login": "wangyuyan-agent",
+            "access_type_sku": "free_limited_copilot",
+            "copilot_plan": "individual",
+            "limited_user_quotas": { "chat": 450, "completions": 4000 },
+            "monthly_quotas":      { "chat": 500, "completions": 4000 },
+            "limited_user_reset_date": "2026-05-13"
+        });
+        let (sq, reset) = build_sub_quotas(&payload);
+
+        assert_eq!(sq.len(), 2);
+        // chat used = (500-450)/500 = 10%；completions 满额 → 0%；chat 排前
+        assert_eq!(sq[0].label, "chat");
+        assert!((sq[0].used_percent - 10.0).abs() < 1e-6);
+        assert_eq!(sq[1].label, "completions");
+        assert!(sq[1].used_percent.abs() < 1e-6);
+
+        assert!(reset.is_some());
+    }
+
+    #[test]
+    fn all_unlimited_returns_empty() {
+        // 企业无限量账号：每条都 unlimited → sub_quotas 为空
+        let payload = json!({
+            "copilot_plan": "enterprise",
+            "quota_snapshots": {
+                "chat":                 { "unlimited": true },
+                "completions":          { "unlimited": true },
+                "premium_interactions": { "unlimited": true }
+            }
+        });
+        let (sq, _) = build_sub_quotas(&payload);
+        assert!(sq.is_empty(), "unlimited 响应不应产生 SubQuota");
+    }
+
+    #[test]
+    fn plan_label_fallbacks() {
+        // copilot_plan 缺失时 fall back 到 access_type_sku
+        let only_sku = json!({ "access_type_sku": "business_seat" });
+        assert_eq!(build_plan_label(&only_sku).as_deref(), Some("business_seat"));
+
+        // 两字段相同 → 不做重复拼接
+        let same = json!({ "copilot_plan": "pro", "access_type_sku": "pro" });
+        assert_eq!(build_plan_label(&same).as_deref(), Some("pro"));
+
+        // 都没有 → None
+        let empty = json!({});
+        assert!(build_plan_label(&empty).is_none());
+    }
+}
