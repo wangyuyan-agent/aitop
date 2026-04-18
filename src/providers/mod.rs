@@ -80,12 +80,12 @@ pub trait Provider: Send + Sync {
 
 pub fn all_providers() -> Vec<Arc<dyn Provider>> {
     vec![
-        Arc::new(openrouter::OpenRouter::default()),
-        Arc::new(gemini::Gemini::default()),
-        Arc::new(codex::Codex::default()),
-        Arc::new(claude::Claude::default()),
-        Arc::new(copilot::Copilot::default()),
-        Arc::new(kiro::Kiro::default()),
+        Arc::new(openrouter::OpenRouter),
+        Arc::new(gemini::Gemini),
+        Arc::new(codex::Codex),
+        Arc::new(claude::Claude),
+        Arc::new(copilot::Copilot),
+        Arc::new(kiro::Kiro),
     ]
 }
 

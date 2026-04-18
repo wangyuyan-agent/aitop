@@ -176,8 +176,8 @@ async fn event_loop(
         terminal.draw(|f| render(f, app))?;
 
         let timeout = tick.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -196,7 +196,6 @@ async fn event_loop(
                     _ => {}
                 }
             }
-        }
 
         if last_tick.elapsed() >= tick {
             last_tick = Instant::now();

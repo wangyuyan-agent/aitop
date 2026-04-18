@@ -52,9 +52,9 @@ impl Provider for Gemini {
         }
         // settings.json 若存在且强制 api-key/vertex-ai 则视为不支持
         let settings = gemini_dir().join("settings.json");
-        if settings.exists() {
-            if let Ok(text) = std::fs::read_to_string(&settings) {
-                if let Ok(v) = serde_json::from_str::<Value>(&text) {
+        if settings.exists()
+            && let Ok(text) = std::fs::read_to_string(&settings)
+                && let Ok(v) = serde_json::from_str::<Value>(&text) {
                     let t = v
                         .get("security")
                         .and_then(|x| x.get("auth"))
@@ -65,8 +65,6 @@ impl Provider for Gemini {
                         return Availability::Missing(format!("Gemini 配置为 {}，仅支持 OAuth", t));
                     }
                 }
-            }
-        }
         Availability::Ready
     }
 
@@ -289,13 +287,12 @@ fn extract_cli_oauth_secrets() -> Option<(String, String)> {
     for d in chunk_dirs {
         if d.is_dir() {
             let pat = d.join("chunk-*.js");
-            if let Some(p) = pat.to_str() {
-                if let Ok(g) = glob::glob(p) {
+            if let Some(p) = pat.to_str()
+                && let Ok(g) = glob::glob(p) {
                     for entry in g.flatten() {
                         candidates.push(entry);
                     }
                 }
-            }
         }
     }
 

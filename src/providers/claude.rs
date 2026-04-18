@@ -11,6 +11,7 @@
 //! 3. 扫 `~/.claude/projects/**/*.jsonl`，分两窗累计：
 //!    - session：过去 5 小时
 //!    - weekly：过去 7 天
+//!
 //!    计数规则（与 Anthropic 的 billable message 口径对齐）：
 //!    - `type == "user"` 且 `message.content` 不是 tool_result only → 记一条"用户轮次"
 //!    - `type == "assistant"` → 累加 `message.usage.input_tokens` / `output_tokens` /
@@ -259,15 +260,12 @@ fn scan_projects() -> Option<ScanStats> {
                 continue;
             }
             // mtime 早于 weekly_cutoff+1h 的整文件跳过，减少 IO
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    if let Ok(dur) = mtime.elapsed() {
-                        if dur > std::time::Duration::from_secs(7 * 24 * 3600 + 3600) {
+            if let Ok(meta) = entry.metadata()
+                && let Ok(mtime) = meta.modified()
+                    && let Ok(dur) = mtime.elapsed()
+                        && dur > std::time::Duration::from_secs(7 * 24 * 3600 + 3600) {
                             continue;
                         }
-                    }
-                }
-            }
             saw_any |= scan_file(&entry, session_cutoff, weekly_cutoff, &mut stats);
         }
     }

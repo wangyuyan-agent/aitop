@@ -39,8 +39,7 @@ impl Lang {
         let norm = s
             .trim()
             .to_lowercase()
-            .replace('_', "-")
-            .replace('.', "-");
+            .replace(['_', '.'], "-");
         match norm.as_str() {
             "en" | "en-us" | "en-gb" | "english" => Some(Lang::En),
             "zh" | "zh-cn" | "zh-hans" | "zh-hans-cn" | "chinese" | "cn" | "zhcn" => {
@@ -56,11 +55,10 @@ impl Lang {
     /// Auto-detect: `AITOP_LANG` first (explicit user pref), then `LANG` / `LC_ALL`.
     /// Default: English.
     pub fn detect() -> Self {
-        if let Ok(v) = std::env::var("AITOP_LANG") {
-            if let Some(l) = Self::parse(&v) {
+        if let Ok(v) = std::env::var("AITOP_LANG")
+            && let Some(l) = Self::parse(&v) {
                 return l;
             }
-        }
         let lang = std::env::var("LANG").unwrap_or_default();
         let lc_all = std::env::var("LC_ALL").unwrap_or_default();
         let joined = format!("{} {}", lang, lc_all).to_lowercase();

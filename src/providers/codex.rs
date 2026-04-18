@@ -127,12 +127,11 @@ impl Provider for Codex {
                 note_parts.push(format!("id_token valid for {}m", mins));
             }
         }
-        if let Some(refresh) = auth.last_refresh.as_deref() {
-            if let Ok(ts) = DateTime::parse_from_rfc3339(refresh) {
+        if let Some(refresh) = auth.last_refresh.as_deref()
+            && let Ok(ts) = DateTime::parse_from_rfc3339(refresh) {
                 let ago = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
                 note_parts.push(format!("refreshed {}h ago", ago.num_hours()));
             }
-        }
         note_parts.push("usage API 未公开".to_string());
 
         Ok(Usage {
