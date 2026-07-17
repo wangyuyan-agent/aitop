@@ -58,7 +58,7 @@ aitop watch gemini --interval 30
 |---|---|---|
 | OpenRouter | env `OPENROUTER_API_KEY` | 存在且非空 |
 | Gemini | `~/.gemini/oauth_creds.json` | 文件存在（先跑 `gemini` CLI 登录） |
-| Kiro | `kiro-cli` 在 `PATH` 内 | `which kiro-cli` 成功（可用 `KIRO_CLI_BIN` 覆盖） |
+| Kiro | `kiro-cli` 在 `PATH` 内 | `which kiro-cli` 或 `which kiro-pool` 任一成功（可用 `KIRO_CLI_BIN` 覆盖） |
 | Copilot | env `GITHUB_TOKEN` / `GH_TOKEN` / `COPILOT_API_TOKEN`，或 `gh` 在 `PATH` | 环境变量已设 或 `which gh` 成功 |
 | Claude | macOS Keychain `Claude Code-credentials` / `~/.claude/.credentials.json` / `~/.claude/projects/` | 三者任一 |
 | Codex | `~/.codex/auth.json` + `~/.codex/sessions/` rollout 日志（可用 `CODEX_HOME` 覆盖目录） | auth.json 存在且能解析出 `tokens` 字段 |
