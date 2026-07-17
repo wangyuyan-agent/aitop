@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 
-use super::{Availability, Provider, Usage, Window};
+use super::{Availability, Provider, SubQuota, Usage, Window};
 
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
@@ -69,6 +69,38 @@ impl Provider for Claude {
             .as_ref()
             .and_then(|c| c.get("rateLimitTier").and_then(Value::as_str))
             .map(str::to_string);
+        let access_token = creds
+            .as_ref()
+            .and_then(|c| c.get("accessToken").and_then(Value::as_str))
+            .map(str::to_string);
+
+        // 官方 usage API（有 token 才试）；失败/限流 → None，走本地估算回落
+        let official = match &access_token {
+            Some(t) => fetch_oauth_usage(t).await,
+            None => None,
+        };
+
+        let account = rate_tier.as_ref().map(|t| format!("tier: {}", t));
+
+        if let Some(v) = official {
+            let parsed = parse_usage_buckets(&v);
+            if parsed.session.is_some() || parsed.weekly.is_some() || !parsed.extra.is_empty() {
+                return Ok(Usage {
+                    provider: "Claude".to_string(),
+                    source: "oauth".to_string(),
+                    account,
+                    plan,
+                    session: parsed.session,
+                    weekly: parsed.weekly,
+                    credits: None,
+                    sub_quotas: parsed.extra,
+                    updated_at: Utc::now(),
+                    note: Some("official usage API".to_string()),
+                });
+            }
+        }
+
+        // ---- 回落：本地 jsonl 日志估算（官方 API 不可用 / 被限流时）----
 
         // 本地日志统计（I/O 密集，丢给 blocking 池）
         let stats = tokio::task::spawn_blocking(scan_projects)
@@ -94,7 +126,6 @@ impl Provider for Claude {
         };
 
         let note = build_note(stats.as_ref(), plan.as_deref(), limits);
-        let account = rate_tier.as_ref().map(|t| format!("tier: {}", t));
 
         Ok(Usage {
             provider: "Claude".to_string(),
@@ -109,6 +140,95 @@ impl Provider for Claude {
             note,
         })
     }
+}
+
+// ---------- 官方 usage API ----------
+
+const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+
+/// 调 Claude Code 的 OAuth usage 端点（就是 `/usage` 面板的数据源）。
+/// 该端点限流很紧（本机若有 bar 类工具轮询会 429）—— 任何非 2xx / 网络错误
+/// 都返回 None，由调用方回落到本地日志估算。
+async fn fetch_oauth_usage(token: &str) -> Option<Value> {
+    let client = super::http_client().ok()?;
+    let resp = client
+        .get(OAUTH_USAGE_URL)
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::debug!("oauth/usage 非 2xx: {}", resp.status());
+        return None;
+    }
+    resp.json().await.ok()
+}
+
+/// 官方 buckets 的解析结果。
+#[derive(Debug, Default)]
+struct OfficialBuckets {
+    session: Option<Window>,
+    weekly: Option<Window>,
+    /// session/weekly 之外的 bucket（如 opus 专属、Fable 专属），进 sub_quotas。
+    extra: Vec<SubQuota>,
+}
+
+/// 防御性解析 usage 响应：遍历 top-level（含一层嵌套数组/对象）中所有含
+/// `utilization`（0..=100 数字）的对象，按 key 归类：
+/// - `five_hour` / `*session*` → session（300 分钟窗）
+/// - `seven_day` 精确匹配 → weekly（10080 分钟窗）
+/// - 其余（`seven_day_opus`、`seven_day_oauth_apps`、模型专属等）→ extra
+///
+/// schema 是非公开的，字段随 Claude Code 版本漂移 —— 宁可漏解析回落，不硬编码全量。
+fn parse_usage_buckets(v: &Value) -> OfficialBuckets {
+    let mut out = OfficialBuckets::default();
+    let Some(obj) = v.as_object() else {
+        return out;
+    };
+
+    for (key, val) in obj {
+        let Some(bucket) = val.as_object() else {
+            continue;
+        };
+        let Some(util) = bucket.get("utilization").and_then(Value::as_f64) else {
+            continue;
+        };
+        let resets_at = bucket.get("resets_at").and_then(|r| match r {
+            Value::String(s) => DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc)),
+            Value::Number(n) => n.as_i64().and_then(|ts| DateTime::from_timestamp(ts, 0)),
+            _ => None,
+        });
+        let used = util.clamp(0.0, 100.0);
+
+        if key == "five_hour" || key.contains("session") {
+            out.session = Some(Window {
+                used_percent: used,
+                window_minutes: Some(300),
+                resets_at,
+            });
+        } else if key == "seven_day" {
+            out.weekly = Some(Window {
+                used_percent: used,
+                window_minutes: Some(10_080),
+                resets_at,
+            });
+        } else {
+            out.extra.push(SubQuota {
+                label: key.replace('_', " "),
+                used_percent: used,
+                resets_at,
+            });
+        }
+    }
+    out.extra.sort_by(|a, b| {
+        b.used_percent
+            .partial_cmp(&a.used_percent)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
 }
 
 // ---------- plan → cap 表 ----------
@@ -448,6 +568,46 @@ mod tests {
             count_event(&e, session_cutoff, weekly_cutoff, &mut stats);
         }
         stats
+    }
+
+    #[test]
+    fn parse_usage_buckets_maps_known_and_extra() {
+        // 社区观测到的 oauth/usage 形态（数值合成）：five_hour / seven_day 已知，
+        // seven_day_opus 与未来的模型专属 bucket 走 extra。
+        let v = json!({
+            "five_hour":  { "utilization": 55.0, "resets_at": "2026-07-17T19:20:00Z" },
+            "seven_day":  { "utilization": 29.0, "resets_at": "2026-07-19T21:00:00Z" },
+            "seven_day_opus": { "utilization": 52.0, "resets_at": "2026-07-19T21:00:00Z" },
+            "fable_only": { "utilization": 48.0, "resets_at": 1784800000 },
+            "not_a_bucket": { "foo": "bar" },
+            "scalar": 42
+        });
+        let b = parse_usage_buckets(&v);
+
+        let s = b.session.expect("five_hour → session");
+        assert!((s.used_percent - 55.0).abs() < 1e-9);
+        assert_eq!(s.window_minutes, Some(300));
+        assert!(s.resets_at.is_some());
+
+        let w = b.weekly.expect("seven_day → weekly");
+        assert!((w.used_percent - 29.0).abs() < 1e-9);
+
+        // extra 按 used_percent 倒序：opus 52 > fable 48
+        assert_eq!(b.extra.len(), 2);
+        assert_eq!(b.extra[0].label, "seven day opus");
+        assert!((b.extra[0].used_percent - 52.0).abs() < 1e-9);
+        assert_eq!(b.extra[1].label, "fable only");
+        // unix 数字形式的 resets_at 也能解析
+        assert!(b.extra[1].resets_at.is_some());
+    }
+
+    #[test]
+    fn parse_usage_buckets_tolerates_unknown_shapes() {
+        // 非 object / 空 / error 响应都安全返回空
+        assert!(parse_usage_buckets(&json!(null)).session.is_none());
+        assert!(parse_usage_buckets(&json!([1, 2])).weekly.is_none());
+        let b = parse_usage_buckets(&json!({"error": {"type": "rate_limit_error"}}));
+        assert!(b.session.is_none() && b.weekly.is_none() && b.extra.is_empty());
     }
 
     #[test]

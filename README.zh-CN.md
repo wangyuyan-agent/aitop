@@ -14,9 +14,10 @@
 - ✅ **OpenRouter** — API key → `/api/v1/auth/key`
 - ✅ **Gemini** — OAuth 凭证 + 自动刷新 + `retrieveUserQuota`（port 自 Python 版）
 - ✅ **Kiro** — 调 `kiro-cli chat --no-interactive /usage` 正则抽取
-- ✅ **Copilot** — GitHub token（env / `gh auth token`）→ `/copilot_internal/user`；付费（`quota_snapshots`）与免费限量（`monthly_quotas`）两种响应都兼容
-- ✅ **Claude** — macOS Keychain（`Claude Code-credentials`）取 plan / tier；扫 `~/.claude/projects/*.jsonl` 汇总过去 5h session + 7d weekly 的 token 数（Anthropic 不公开额度 → 不画进度条，只显示原始数值）
-- ✅ **Codex** — `~/.codex/auth.json` OAuth；解 `id_token` JWT 取 account / plan（ChatGPT 订阅用量 API 非公开 → 只显示 account + plan + token 刷新时间）
+- ✅ **Copilot** — GitHub token（env / `gh auth token`）→ `/copilot_internal/user`；付费（`quota_snapshots`，含超额警告）与免费限量（`monthly_quotas`）两种响应都兼容
+- ✅ **Claude** — 官方 OAuth usage API（与 Claude Code `/usage` 面板同源：session / weekly / 按模型 bucket）；端点被限流时回落到扫 `~/.claude/projects/*.jsonl` 本地估算
+- ✅ **Codex** — `~/.codex/auth.json` OAuth 取身份 + 本地 rollout 日志的官方 `rate_limits` 快照（`~/.codex/sessions/**/rollout-*.jsonl` 的 `token_count` 事件 → 周窗/会话进度条、credits、plan）
+- ✅ **Kiro pool** — `PATH` 上有 `kiro-pool`（多账号轮转池，`usage --json`）时，池中每个 profile 的 credits 以 sub-quota 形式与当前账号并列展示
 - ✅ **TUI**（ratatui）— 卡片布局、并发刷新、实时更新
 - ✅ **多语言** — English / 简体中文 / 繁體中文，通过 `rust-i18n` + `locales/app.yml` 数据驱动
 
@@ -60,7 +61,8 @@ aitop watch gemini --interval 30
 | Kiro | `kiro-cli` 在 `PATH` 内 | `which kiro-cli` 成功（可用 `KIRO_CLI_BIN` 覆盖） |
 | Copilot | env `GITHUB_TOKEN` / `GH_TOKEN` / `COPILOT_API_TOKEN`，或 `gh` 在 `PATH` | 环境变量已设 或 `which gh` 成功 |
 | Claude | macOS Keychain `Claude Code-credentials` / `~/.claude/.credentials.json` / `~/.claude/projects/` | 三者任一 |
-| Codex | `~/.codex/auth.json`（可用 `CODEX_HOME` 覆盖目录） | 文件存在且能解析出 `tokens` 字段 |
+| Codex | `~/.codex/auth.json` + `~/.codex/sessions/` rollout 日志（可用 `CODEX_HOME` 覆盖目录） | auth.json 存在且能解析出 `tokens` 字段 |
+| Kiro pool | `kiro-pool` 在 `PATH`（可用 `KIRO_POOL_BIN` 覆盖） | 可选 —— 存在时扩展 Kiro 卡片 |
 
 `detect()` 仅做本地 I/O（不发网络），因此启动时能立刻过滤未配置的 provider。
 

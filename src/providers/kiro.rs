@@ -1,4 +1,6 @@
-//! Kiro — spawn `kiro-cli chat --no-interactive /usage`，解析文本输出。
+//! Kiro — spawn `kiro-cli chat --no-interactive /usage`，解析文本输出；
+//! 另外若本机装有 `kiro-pool`（kiro-multi 的多账号轮转池），额外拉
+//! `kiro-pool usage --json` 把池中每个 profile 的 credits 显示为 SubQuota。
 //!
 //! `/usage` 不是顶层子命令，而是 chat 里的 client-side slash command；
 //! `chat --no-interactive` 把它在非交互模式下执行后即刻退出。
@@ -17,13 +19,21 @@
 //! - `(\d+)\s*%\s*$`（按行）→ Session used_percent
 //! - `resets on (\d{4}-\d{2}-\d{2})` → resets_at（取当天 00:00 UTC）
 //! - `\|\s*([A-Z][A-Z\s]+?)\s*(?:\||$)` 取首行管道段中的计划名
+//!
+//! `kiro-pool usage --json` 输出（stdout，一行一个 profile 汇总在 usage 数组）：
+//!
+//! ```json
+//! {"usage":[{"name":"student_2","plan":"KIRO STUDENT","credits_total":1000.0,
+//!            "credits_used":398.74,"used_percent":39.87,"resets_at":"2026-08-01"}]}
+//! ```
 
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
+use serde_json::Value;
 
-use super::{Availability, Credits, Provider, Usage, Window};
+use super::{Availability, Credits, Provider, SubQuota, Usage, Window};
 
 /// `/usage` 输出解析结果。fetch 调用链上把它组装进 [`Usage`]。
 #[derive(Debug, Default, Clone)]
@@ -44,37 +54,36 @@ impl Provider for Kiro {
 
     fn detect(&self) -> Availability {
         let bin = std::env::var("KIRO_CLI_BIN").unwrap_or_else(|_| "kiro-cli".into());
-        if which::which(&bin).is_ok() {
+        if which::which(&bin).is_ok() || which::which(pool_bin()).is_ok() {
             Availability::Ready
         } else {
-            Availability::Missing(format!("{} 不在 PATH（可通过 KIRO_CLI_BIN 指定）", bin))
+            Availability::Missing(format!(
+                "{} / kiro-pool 都不在 PATH（可通过 KIRO_CLI_BIN / KIRO_POOL_BIN 指定）",
+                bin
+            ))
         }
     }
 
     async fn fetch(&self) -> Result<Usage> {
-        let bin = std::env::var("KIRO_CLI_BIN").unwrap_or_else(|_| "kiro-cli".into());
-        let out = tokio::process::Command::new(&bin)
-            .args(["chat", "--no-interactive", "/usage"])
-            .output()
-            .await
-            .map_err(|e| anyhow!("无法调用 {}: {}（请确认 kiro-cli 已在 PATH）", bin, e))?;
-        if !out.status.success() {
-            bail!(
-                "{} chat --no-interactive /usage 失败 (exit={:?}): {}",
-                bin,
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        // kiro-cli 把 /usage 面板写到 stderr（slash command 不是 chat 正文）；
-        // stdout 通常是空，但两边都扫一下保险。
-        let raw_stdout = String::from_utf8_lossy(&out.stdout);
-        let raw_stderr = String::from_utf8_lossy(&out.stderr);
-        let combined = format!("{}\n{}", raw_stdout, raw_stderr);
-        let text = strip_ansi(&combined);
+        // 当前账号（kiro-cli）与多账号池（kiro-pool）并发拉取；任一失败不拖累另一边
+        let (current, pool) = tokio::join!(fetch_current_account(), fetch_pool());
 
-        let parsed = parse_usage_output(&text);
-        let has_data = parsed.session.is_some() || parsed.credits.is_some();
+        let parsed = current.unwrap_or_default();
+        let (sub_quotas, pool_note) = pool.unwrap_or_default();
+
+        let has_data =
+            parsed.session.is_some() || parsed.credits.is_some() || !sub_quotas.is_empty();
+        if !has_data {
+            bail!("kiro-cli 与 kiro-pool 均未取到数据（各自可能未安装或未登录）");
+        }
+
+        let mut note_parts: Vec<String> = Vec::new();
+        if parsed.session.is_none() && parsed.credits.is_none() {
+            note_parts.push("当前账号 /usage 不可用".to_string());
+        }
+        if let Some(n) = pool_note {
+            note_parts.push(n);
+        }
 
         Ok(Usage {
             provider: "Kiro".to_string(),
@@ -84,18 +93,124 @@ impl Provider for Kiro {
             session: parsed.session,
             weekly: None,
             credits: parsed.credits,
-            sub_quotas: Vec::new(),
+            sub_quotas,
             updated_at: Utc::now(),
-            note: if !has_data {
-                Some(format!(
-                    "无法解析 kiro-cli 输出，请贴给开发者：\n{}",
-                    text.trim()
-                ))
-            } else {
+            note: if note_parts.is_empty() {
                 None
+            } else {
+                Some(note_parts.join(" · "))
             },
         })
     }
+}
+
+fn pool_bin() -> String {
+    std::env::var("KIRO_POOL_BIN").unwrap_or_else(|_| "kiro-pool".into())
+}
+
+/// 当前登录账号：`kiro-cli chat --no-interactive /usage` 文本解析。
+async fn fetch_current_account() -> Result<ParsedKiro> {
+    let bin = std::env::var("KIRO_CLI_BIN").unwrap_or_else(|_| "kiro-cli".into());
+    let out = tokio::process::Command::new(&bin)
+        .args(["chat", "--no-interactive", "/usage"])
+        .output()
+        .await
+        .map_err(|e| anyhow!("无法调用 {}: {}（请确认 kiro-cli 已在 PATH）", bin, e))?;
+    if !out.status.success() {
+        bail!(
+            "{} chat --no-interactive /usage 失败 (exit={:?}): {}",
+            bin,
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    // kiro-cli 把 /usage 面板写到 stderr（slash command 不是 chat 正文）；
+    // stdout 通常是空，但两边都扫一下保险。
+    let raw_stdout = String::from_utf8_lossy(&out.stdout);
+    let raw_stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{}\n{}", raw_stdout, raw_stderr);
+    Ok(parse_usage_output(&strip_ansi(&combined)))
+}
+
+/// 多账号池：`kiro-pool usage --json` → 每个 profile 一条 SubQuota + 汇总 note。
+/// pool 会逐个 profile 发请求，账号多时偏慢 → 120s 兜底超时。
+async fn fetch_pool() -> Result<(Vec<SubQuota>, Option<String>)> {
+    let bin = pool_bin();
+    if which::which(&bin).is_err() {
+        return Ok((Vec::new(), None));
+    }
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        tokio::process::Command::new(&bin)
+            .args(["usage", "--json"])
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow!("kiro-pool usage 超时（120s）"))?
+    .map_err(|e| anyhow!("无法调用 {}: {}", bin, e))?;
+    if !out.status.success() {
+        bail!(
+            "kiro-pool usage --json 失败 (exit={:?}): {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_pool_json(&text))
+}
+
+/// 纯函数：解析 `kiro-pool usage --json` 输出。
+/// 返回（每 profile 一条 SubQuota, 汇总 note）。解析不出返回空。
+fn parse_pool_json(text: &str) -> (Vec<SubQuota>, Option<String>) {
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        return (Vec::new(), None);
+    };
+    let Some(items) = v.get("usage").and_then(Value::as_array) else {
+        return (Vec::new(), None);
+    };
+
+    let mut out: Vec<SubQuota> = Vec::new();
+    let mut total_left = 0.0_f64;
+    for item in items {
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(used_pct) = item.get("used_percent").and_then(Value::as_f64) else {
+            continue;
+        };
+        let resets_at = item
+            .get("resets_at")
+            .and_then(Value::as_str)
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|dt| dt.and_utc());
+        if let (Some(total), Some(used)) = (
+            item.get("credits_total").and_then(Value::as_f64),
+            item.get("credits_used").and_then(Value::as_f64),
+        ) {
+            total_left += (total - used).max(0.0);
+        }
+        out.push(SubQuota {
+            label: format!("pool:{}", name),
+            used_percent: used_pct.clamp(0.0, 100.0),
+            resets_at,
+        });
+    }
+    if out.is_empty() {
+        return (Vec::new(), None);
+    }
+    // 最紧的排前面，与其他 provider 的 sub_quotas 排序一致
+    out.sort_by(|a, b| {
+        b.used_percent
+            .partial_cmp(&a.used_percent)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let note = Some(format!(
+        "pool: {} profiles · {:.1} credits left",
+        out.len(),
+        total_left
+    ));
+    (out, note)
 }
 
 /// 纯函数：把 `kiro-cli chat --no-interactive /usage` 的**已 strip ANSI** 输出解析成
@@ -221,6 +336,44 @@ mod tests {
         assert!(p.plan.is_none());
         assert!(p.session.is_none());
         assert!(p.credits.is_none());
+    }
+
+    #[test]
+    fn parse_pool_json_maps_profiles_to_subquotas() {
+        // kiro-pool usage --json 的真实形态（数值脱敏）
+        let text = r#"{
+            "usage": [
+                {"credits_total": 1000.0, "credits_used": 398.74, "name": "student_2",
+                 "plan": "KIRO STUDENT", "resets_at": "2026-08-01", "used_percent": 39.874},
+                {"credits_total": 1000.0, "credits_used": 442.7, "name": "student_3",
+                 "plan": "KIRO STUDENT", "resets_at": "2026-08-01", "used_percent": 44.27},
+                {"credits_total": 1000.0, "credits_used": 291.65, "name": "student_4",
+                 "plan": "KIRO STUDENT", "resets_at": "2026-08-01", "used_percent": 29.165}
+            ]
+        }"#;
+        let (sq, note) = parse_pool_json(text);
+
+        assert_eq!(sq.len(), 3);
+        // 最紧的（student_3, 44.27%）排前面
+        assert_eq!(sq[0].label, "pool:student_3");
+        assert!((sq[0].used_percent - 44.27).abs() < 1e-9);
+        assert_eq!(sq[2].label, "pool:student_4");
+        assert!(sq[0].resets_at.is_some());
+
+        // 汇总：601.26 + 557.3 + 708.35 = 1866.91
+        let note = note.expect("应有汇总 note");
+        assert!(note.contains("3 profiles"), "{note}");
+        assert!(note.contains("1866.9"), "{note}");
+    }
+
+    #[test]
+    fn parse_pool_json_tolerates_garbage() {
+        assert_eq!(parse_pool_json("").0.len(), 0);
+        assert_eq!(parse_pool_json("not json").0.len(), 0);
+        assert_eq!(parse_pool_json(r#"{"usage": []}"#).0.len(), 0);
+        // 缺 used_percent 的条目被跳过
+        let (sq, _) = parse_pool_json(r#"{"usage": [{"name": "x"}]}"#);
+        assert!(sq.is_empty());
     }
 
     #[test]

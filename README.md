@@ -14,9 +14,10 @@
 - ✅ **OpenRouter** — API key via `/api/v1/auth/key`
 - ✅ **Gemini** — OAuth creds + auto-refresh + `retrieveUserQuota` (ported from the Python tool)
 - ✅ **Kiro** — shells out to `kiro-cli chat --no-interactive /usage`, regex-extracts
-- ✅ **Copilot** — GitHub token (env / `gh auth token`) → `/copilot_internal/user`; handles paid (`quota_snapshots`) and free-limited (`monthly_quotas`) tiers
-- ✅ **Claude** — macOS Keychain (`Claude Code-credentials`) for plan/tier; tallies `~/.claude/projects/*.jsonl` into 5h session + 7d weekly token counts (Anthropic doesn't publish quotas → no gauge, only raw numbers)
-- ✅ **Codex** — `~/.codex/auth.json` OAuth; decodes `id_token` JWT for account/plan (ChatGPT usage API not public → account + plan + token freshness only)
+- ✅ **Copilot** — GitHub token (env / `gh auth token`) → `/copilot_internal/user`; handles paid (`quota_snapshots`, incl. overage reporting) and free-limited (`monthly_quotas`) tiers
+- ✅ **Claude** — official OAuth usage API (same source as Claude Code's `/usage` panel: session / weekly / per-model buckets); falls back to tallying `~/.claude/projects/*.jsonl` when the endpoint is rate-limited
+- ✅ **Codex** — `~/.codex/auth.json` OAuth for identity + official `rate_limits` snapshots from local rollout logs (`~/.codex/sessions/**/rollout-*.jsonl` `token_count` events → weekly/session gauges, credits, plan)
+- ✅ **Kiro pool** — if a `kiro-pool` binary (multi-account rotation pool, `usage --json`) is on `PATH`, every profile's credits show up as sub-quotas alongside the current account
 - ✅ **TUI** (ratatui) — card layout, concurrent fetch, live refresh
 - ✅ **i18n** — English / 简体中文 / 繁體中文, data-driven via `rust-i18n` + `locales/app.yml`
 
@@ -60,7 +61,8 @@ aitop watch gemini --interval 30
 | Kiro | `kiro-cli` on `PATH` | `which kiro-cli` succeeds (override with `KIRO_CLI_BIN`) |
 | Copilot | env `GITHUB_TOKEN` / `GH_TOKEN` / `COPILOT_API_TOKEN`, or `gh` on `PATH` | env var set, or `which gh` succeeds |
 | Claude | macOS Keychain `Claude Code-credentials` or `~/.claude/.credentials.json` or `~/.claude/projects/` | any of the three present |
-| Codex | `~/.codex/auth.json` (override: `CODEX_HOME`) | file exists and parses with `tokens` field |
+| Codex | `~/.codex/auth.json` + `~/.codex/sessions/` rollout logs (override: `CODEX_HOME`) | auth.json exists and parses with `tokens` field |
+| Kiro pool | `kiro-pool` on `PATH` (override: `KIRO_POOL_BIN`) | optional — extends the Kiro card when present |
 
 `detect()` does local I/O only — no network requests — so unconfigured providers can be filtered out instantly at startup.
 

@@ -1,20 +1,29 @@
-//! Codex — OpenAI Codex CLI 的 `~/.codex/auth.json` OAuth 会话
+//! Codex — OpenAI Codex CLI 的 `~/.codex/auth.json` OAuth 会话 + 本地 rollout 日志限额快照
 //!
-//! ChatGPT / Codex 订阅的"剩余消息数"没有公开 API——OpenAI 只在 platform.openai.com
-//! 的 dashboard 上暴露按 API key 的 token 用量。Codex CLI 用的是 OAuth JWT，
-//! scope 跑不到 `/v1/dashboard/billing/usage` 之类的端点。
+//! ChatGPT / Codex 订阅没有公开的用量查询 API，但 Codex CLI（>= 0.4x）把每次
+//! 服务端返回的限额状态写进 rollout 日志：
+//! `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 的 `token_count` 事件带
+//! `rate_limits` 快照（官方数据，非估算）：
 //!
-//! 因此本 provider 做最保守、可验证的事：
-//! 1. detect：检查 `~/.codex/auth.json` 存在并可解析。
-//! 2. fetch：解码 `tokens.id_token` 的 JWT claims，抽 email / plan / org：
-//!    - `email` → account
-//!    - `https://api.openai.com/auth.chatgpt_plan_type` → plan
-//!    - `https://api.openai.com/auth.chatgpt_account_id` → note
-//! 3. 用 `last_refresh` 时间戳提示 token 新鲜度；若 JWT 已过期则给出警告。
+//! ```json
+//! {"timestamp":"...","type":"event_msg","payload":{"type":"token_count",
+//!   "rate_limits":{"limit_id":"codex","primary":{"used_percent":62.0,
+//!   "window_minutes":10080,"resets_at":1784791060},"secondary":null,
+//!   "credits":{"has_credits":false,"unlimited":false,"balance":"0"},
+//!   "plan_type":"plus"}}}
+//! ```
 //!
-//! 未来若 OpenAI 公开 Codex session / message 配额 API，fetch 在这里扩即可。
+//! 本 provider：
+//! 1. detect：`~/.codex/auth.json` 存在并可解析。
+//! 2. fetch：
+//!    - 解码 `tokens.id_token` JWT → email / plan / account_id（身份）
+//!    - 扫最新 rollout 日志（按 mtime 倒序 tail-read）→ 最后一条 `rate_limits`
+//!      快照 → `window_minutes < 1440` 进 session、其余进 weekly；credits 有
+//!      余额时透出；快照年龄拼进 note（例如 `limits 2h ago`）
+//!    - 找不到快照时回退为仅身份显示（旧行为）
 
-use std::path::PathBuf;
+use std::io::{Read as _, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -24,7 +33,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Availability, Provider, Usage};
+use super::{Availability, Credits, Provider, Usage, Window};
 
 #[derive(Default)]
 pub struct Codex;
@@ -115,6 +124,11 @@ impl Provider for Codex {
             .map(str::to_string)
             .or(tokens.account_id);
 
+        // 本地 rollout 日志里的官方限额快照（I/O 密集，丢 blocking 池）
+        let snapshot = tokio::task::spawn_blocking(|| find_latest_rate_limits(&sessions_dir()))
+            .await
+            .context("扫描 ~/.codex/sessions 失败（线程 join）")?;
+
         // JWT 过期 / 刷新时间
         let exp = claims.get("exp").and_then(Value::as_i64);
         let now = Utc::now().timestamp();
@@ -144,21 +158,191 @@ impl Provider for Codex {
                 fmt_duration_secs(ago.num_seconds())
             ));
         }
-        note_parts.push("usage API 未公开".to_string());
+
+        let (session, weekly, credits, mut plan) = match &snapshot {
+            Some(s) => {
+                let age = Utc::now().signed_duration_since(s.observed_at);
+                note_parts.push(format!(
+                    "limits from local log, {} ago",
+                    fmt_duration_secs(age.num_seconds())
+                ));
+                (
+                    s.session.clone(),
+                    s.weekly.clone(),
+                    s.credits.clone(),
+                    s.plan_type.clone(),
+                )
+            }
+            None => {
+                note_parts.push("no rate_limits in local logs".to_string());
+                (None, None, None, None)
+            }
+        };
+        // 快照里的 plan_type 比 JWT 新鲜；两者都有时以快照为准
+        plan = plan.or(plan_type);
 
         Ok(Usage {
             provider: "Codex".to_string(),
             source: "oauth".to_string(),
             account: email,
-            plan: plan_type,
-            session: None,
-            weekly: None,
-            credits: None,
+            plan,
+            session,
+            weekly,
+            credits,
             sub_quotas: Vec::new(),
             updated_at: Utc::now(),
             note: Some(note_parts.join(" · ")),
         })
     }
+}
+
+// ---------- rollout 日志限额快照 ----------
+
+/// 从 rollout 日志解析出来的一次官方限额快照。
+#[derive(Debug, Clone)]
+struct RateLimitSnapshot {
+    session: Option<Window>,
+    weekly: Option<Window>,
+    credits: Option<Credits>,
+    plan_type: Option<String>,
+    /// 快照写入日志的时刻（事件行的 timestamp）。
+    observed_at: DateTime<Utc>,
+}
+
+fn sessions_dir() -> PathBuf {
+    let base = if let Ok(p) = std::env::var("CODEX_HOME") {
+        PathBuf::from(p)
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/"))
+            .join(".codex")
+    };
+    base.join("sessions")
+}
+
+/// 找最新的 `rate_limits` 快照：收集 rollout 文件按 mtime 倒序，
+/// 逐个 tail-read（最后 512 KiB）从后往前找 `token_count` 事件。
+fn find_latest_rate_limits(dir: &Path) -> Option<RateLimitSnapshot> {
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    collect_jsonl(dir, &mut files, 0);
+    files.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
+
+    // 只看最近 10 个文件；活跃机器第一个就会命中
+    for (_, path) in files.into_iter().take(10) {
+        if let Some(s) = tail_find_rate_limits(&path) {
+            return Some(s);
+        }
+    }
+    None
+}
+
+/// 递归收集 `.jsonl`（sessions/YYYY/MM/DD/ 三层，限深防意外符号链接环）。
+fn collect_jsonl(dir: &Path, out: &mut Vec<(std::time::SystemTime, PathBuf)>, depth: usize) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl(&path, out, depth + 1);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            && let Ok(meta) = entry.metadata()
+            && let Ok(mtime) = meta.modified()
+        {
+            out.push((mtime, path));
+        }
+    }
+}
+
+/// 读文件尾部（最多 512 KiB），倒序找最后一条带 `rate_limits` 的 `token_count` 事件。
+fn tail_find_rate_limits(path: &Path) -> Option<RateLimitSnapshot> {
+    const TAIL: u64 = 512 * 1024;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = String::new();
+    f.read_to_string(&mut buf).ok()?;
+
+    for line in buf.lines().rev() {
+        if !line.contains("\"rate_limits\"") || !line.contains("\"token_count\"") {
+            continue;
+        }
+        if let Some(s) = parse_rate_limit_line(line) {
+            return Some(s);
+        }
+    }
+    None
+}
+
+/// 解析单行 rollout 事件 → 快照。对 schema 缺字段全部容错。
+fn parse_rate_limit_line(line: &str) -> Option<RateLimitSnapshot> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let observed_at = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))?;
+    let rl = v.get("payload")?.get("rate_limits")?;
+
+    // primary / secondary 各自可能是 session（短窗）或 weekly（长窗）
+    let mut session: Option<Window> = None;
+    let mut weekly: Option<Window> = None;
+    for key in ["primary", "secondary"] {
+        let Some(w) = rl.get(key).filter(|w| !w.is_null()) else {
+            continue;
+        };
+        let Some(used) = w.get("used_percent").and_then(Value::as_f64) else {
+            continue;
+        };
+        let minutes = w.get("window_minutes").and_then(Value::as_u64);
+        let resets_at = w
+            .get("resets_at")
+            .and_then(Value::as_i64)
+            .and_then(|ts| DateTime::from_timestamp(ts, 0));
+        let win = Window {
+            used_percent: used.clamp(0.0, 100.0),
+            window_minutes: minutes,
+            resets_at,
+        };
+        // < 1 天的窗算 session，其余算 weekly；未知窗长按 weekly 兜底
+        match minutes {
+            Some(m) if m < 1440 => session = session.or(Some(win)),
+            _ => weekly = weekly.or(Some(win)),
+        }
+    }
+
+    let credits = rl.get("credits").and_then(|c| {
+        let has = c
+            .get("has_credits")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !has {
+            return None;
+        }
+        let balance = c.get("balance").and_then(Value::as_str)?.parse().ok()?;
+        Some(Credits {
+            remaining: balance,
+            total: None,
+            unit: "credits".to_string(),
+        })
+    });
+
+    let plan_type = rl
+        .get("plan_type")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    Some(RateLimitSnapshot {
+        session,
+        weekly,
+        credits,
+        plan_type,
+        observed_at,
+    })
 }
 
 fn auth_path() -> PathBuf {
@@ -273,6 +457,63 @@ mod tests {
     fn auth_path_falls_back_to_home_when_no_codex_home() {
         let p = auth_path_with(None, Some(PathBuf::from("/home/icex")));
         assert_eq!(p, Path::new("/home/icex/.codex/auth.json"));
+    }
+
+    #[test]
+    fn parse_rate_limit_line_full_shape() {
+        // 真实 rollout 行的形态（token 数值已脱敏）
+        let line = r#"{"timestamp":"2026-07-17T07:45:51.102Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1000}},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":62.0,"window_minutes":10080,"resets_at":1784791060},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"individual_limit":null,"spend_control_reached":null,"plan_type":"plus","rate_limit_reached_type":null}}}"#;
+        let s = parse_rate_limit_line(line).expect("应能解析真实形态");
+
+        // 10080 分钟 = 7 天 → weekly；无短窗 → session None
+        assert!(s.session.is_none());
+        let w = s.weekly.expect("weekly 应存在");
+        assert!((w.used_percent - 62.0).abs() < 1e-9);
+        assert_eq!(w.window_minutes, Some(10_080));
+        assert_eq!(w.resets_at.map(|t| t.timestamp()), Some(1_784_791_060_i64));
+
+        // has_credits=false → 不产生 Credits
+        assert!(s.credits.is_none());
+        assert_eq!(s.plan_type.as_deref(), Some("plus"));
+        assert_eq!(s.observed_at.to_rfc3339(), "2026-07-17T07:45:51.102+00:00");
+    }
+
+    #[test]
+    fn parse_rate_limit_line_dual_windows_and_credits() {
+        // primary 短窗（5h）+ secondary 长窗（7d）+ 有余额 credits
+        let line = r#"{"timestamp":"2026-07-17T00:00:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":48.0,"window_minutes":300,"resets_at":1784800000},"secondary":{"used_percent":63.0,"window_minutes":10080,"resets_at":1784791060},"credits":{"has_credits":true,"unlimited":false,"balance":"1250.5"},"plan_type":"pro"}}}"#;
+        let s = parse_rate_limit_line(line).unwrap();
+
+        let sess = s.session.expect("300 分钟窗应归入 session");
+        assert!((sess.used_percent - 48.0).abs() < 1e-9);
+        assert_eq!(sess.window_minutes, Some(300));
+
+        let wk = s.weekly.expect("10080 分钟窗应归入 weekly");
+        assert!((wk.used_percent - 63.0).abs() < 1e-9);
+
+        let c = s.credits.expect("has_credits=true 应产生 Credits");
+        assert!((c.remaining - 1250.5).abs() < 1e-9);
+        assert_eq!(s.plan_type.as_deref(), Some("pro"));
+    }
+
+    #[test]
+    fn parse_rate_limit_line_rejects_malformed() {
+        // 缺 timestamp
+        assert!(
+            parse_rate_limit_line(
+                r#"{"payload":{"rate_limits":{"primary":{"used_percent":1.0}}}}"#
+            )
+            .is_none()
+        );
+        // 缺 rate_limits
+        assert!(
+            parse_rate_limit_line(
+                r#"{"timestamp":"2026-07-17T00:00:00Z","payload":{"type":"token_count"}}"#
+            )
+            .is_none()
+        );
+        // 非 JSON
+        assert!(parse_rate_limit_line("not json at all").is_none());
     }
 
     #[test]
