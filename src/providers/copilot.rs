@@ -100,9 +100,17 @@ impl Provider for Copilot {
         };
 
         let plan = build_plan_label(&copilot);
-        let (sub_quotas, reset_date) = build_sub_quotas(&copilot);
+        let summary = build_sub_quotas(&copilot);
 
-        let note = reset_date.map(|d| format!("quota resets on {}", d.format("%Y-%m-%d")));
+        let mut note_parts: Vec<String> = summary.overages.clone();
+        if let Some(d) = summary.reset_at {
+            note_parts.push(format!("quota resets on {}", d.format("%Y-%m-%d")));
+        }
+        let note = if note_parts.is_empty() {
+            None
+        } else {
+            Some(note_parts.join(" · "))
+        };
 
         Ok(Usage {
             provider: "Copilot".to_string(),
@@ -112,7 +120,7 @@ impl Provider for Copilot {
             session: None,
             weekly: None,
             credits: None,
-            sub_quotas,
+            sub_quotas: summary.sub_quotas,
             updated_at: Utc::now(),
             note,
         })
@@ -184,9 +192,19 @@ fn build_plan_label(copilot: &Value) -> Option<String> {
     }
 }
 
+/// `build_sub_quotas` 的结果：SubQuota 列表 + 重置日期 + 超额警告（如 `premium over by 6 (306/300)`）。
+struct QuotaSummary {
+    sub_quotas: Vec<SubQuota>,
+    reset_at: Option<DateTime<Utc>>,
+    overages: Vec<String>,
+}
+
 /// 统一两种响应形态到 SubQuota 列表。
 /// 付费走 `quota_snapshots`（有 `percent_remaining`），免费走 `limited_user_quotas` + `monthly_quotas`。
-fn build_sub_quotas(copilot: &Value) -> (Vec<SubQuota>, Option<DateTime<Utc>>) {
+///
+/// 付费快照里 `remaining` 可以是负数（超额后按量计费 / overage）；`used_percent` 会被
+/// clamp 到 100，所以超额事实单独收进 `overages`，由 fetch 拼进 note。
+fn build_sub_quotas(copilot: &Value) -> QuotaSummary {
     // 付费：quota_reset_date。免费：limited_user_reset_date。两者都没有时 None。
     let reset_at = copilot
         .get("quota_reset_date")
@@ -195,6 +213,7 @@ fn build_sub_quotas(copilot: &Value) -> (Vec<SubQuota>, Option<DateTime<Utc>>) {
         .and_then(parse_date);
 
     let mut out: Vec<SubQuota> = Vec::new();
+    let mut overages: Vec<String> = Vec::new();
 
     // 路径 A：付费用户的 quota_snapshots
     if let Some(snap) = copilot.get("quota_snapshots").and_then(Value::as_object) {
@@ -215,6 +234,27 @@ fn build_sub_quotas(copilot: &Value) -> (Vec<SubQuota>, Option<DateTime<Utc>>) {
                 used_percent: used,
                 resets_at: reset_at,
             });
+
+            // 超额：remaining < 0（如 -6 表示超 6 次）。credits_used/entitlement 给出总量口径。
+            let remaining = meta.get("remaining").and_then(Value::as_f64).unwrap_or(0.0);
+            if remaining < 0.0 {
+                let over = -remaining;
+                let detail = match (
+                    meta.get("credits_used").and_then(Value::as_f64),
+                    meta.get("entitlement").and_then(Value::as_f64),
+                ) {
+                    (Some(used_n), Some(ent)) if ent > 0.0 => {
+                        format!(" ({:.0}/{:.0})", used_n, ent)
+                    }
+                    _ => String::new(),
+                };
+                overages.push(format!(
+                    "⚠ {} over by {:.0}{}",
+                    pretty_label(label),
+                    over,
+                    detail
+                ));
+            }
         }
     }
 
@@ -248,7 +288,11 @@ fn build_sub_quotas(copilot: &Value) -> (Vec<SubQuota>, Option<DateTime<Utc>>) {
             .partial_cmp(&a.used_percent)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    (out, reset_at)
+    QuotaSummary {
+        sub_quotas: out,
+        reset_at,
+        overages,
+    }
 }
 
 fn pretty_label(key: &str) -> String {
@@ -303,7 +347,8 @@ mod tests {
                 }
             }
         });
-        let (sq, reset) = build_sub_quotas(&payload);
+        let s = build_sub_quotas(&payload);
+        let sq = &s.sub_quotas;
 
         // completions 被跳过；剩 chat + premium_interactions 两条
         assert_eq!(sq.len(), 2);
@@ -313,8 +358,11 @@ mod tests {
         assert_eq!(sq[1].label, "chat");
         assert!((sq[1].used_percent - 50.0).abs() < 1e-6);
 
+        // 没超额 → 无警告
+        assert!(s.overages.is_empty());
+
         // reset date 对齐 2025-11-01 00:00 UTC
-        let reset = reset.expect("应当有 quota_reset_date");
+        let reset = s.reset_at.expect("应当有 quota_reset_date");
         assert_eq!(reset.format("%Y-%m-%d").to_string(), "2025-11-01");
 
         // plan label
@@ -335,7 +383,8 @@ mod tests {
             "monthly_quotas":      { "chat": 500, "completions": 4000 },
             "limited_user_reset_date": "2026-05-13"
         });
-        let (sq, reset) = build_sub_quotas(&payload);
+        let s = build_sub_quotas(&payload);
+        let sq = &s.sub_quotas;
 
         assert_eq!(sq.len(), 2);
         // chat used = (500-450)/500 = 10%；completions 满额 → 0%；chat 排前
@@ -344,7 +393,7 @@ mod tests {
         assert_eq!(sq[1].label, "completions");
         assert!(sq[1].used_percent.abs() < 1e-6);
 
-        assert!(reset.is_some());
+        assert!(s.reset_at.is_some());
     }
 
     #[test]
@@ -358,8 +407,43 @@ mod tests {
                 "premium_interactions": { "unlimited": true }
             }
         });
-        let (sq, _) = build_sub_quotas(&payload);
-        assert!(sq.is_empty(), "unlimited 响应不应产生 SubQuota");
+        let s = build_sub_quotas(&payload);
+        assert!(s.sub_quotas.is_empty(), "unlimited 响应不应产生 SubQuota");
+    }
+
+    #[test]
+    fn overage_on_paid_plan_is_reported() {
+        // 真实观测到的年订阅形态（字段值已脱敏）：chat / completions unlimited，
+        // premium_interactions 超额（remaining = -6，credits_used 306 / entitlement 300）。
+        let payload = json!({
+            "login": "someone",
+            "access_type_sku": "yearly_subscriber_quota",
+            "copilot_plan": "individual",
+            "quota_reset_date": "2026-08-01",
+            "quota_snapshots": {
+                "chat":        { "unlimited": true, "percent_remaining": 100.0, "remaining": 0 },
+                "completions": { "unlimited": true, "percent_remaining": 100.0, "remaining": 0 },
+                "premium_interactions": {
+                    "unlimited": false,
+                    "percent_remaining": 0.0,
+                    "remaining": -6,
+                    "credits_used": 306,
+                    "entitlement": 300,
+                    "overage_count": 6,
+                    "overage_permitted": false
+                }
+            }
+        });
+        let s = build_sub_quotas(&payload);
+
+        // unlimited 两条跳过，premium 一条且顶满 100%
+        assert_eq!(s.sub_quotas.len(), 1);
+        assert_eq!(s.sub_quotas[0].label, "premium");
+        assert!((s.sub_quotas[0].used_percent - 100.0).abs() < 1e-6);
+
+        // 超额警告要带条数和总量口径
+        assert_eq!(s.overages.len(), 1);
+        assert_eq!(s.overages[0], "⚠ premium over by 6 (306/300)");
     }
 
     #[test]

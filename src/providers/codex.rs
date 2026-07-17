@@ -124,17 +124,25 @@ impl Provider for Codex {
         }
         if let Some(exp_ts) = exp {
             if exp_ts < now {
-                note_parts.push(format!("⚠ id_token expired {}s ago", now - exp_ts));
+                note_parts.push(format!(
+                    "⚠ id_token expired {} ago",
+                    fmt_duration_secs(now - exp_ts)
+                ));
             } else {
-                let mins = (exp_ts - now) / 60;
-                note_parts.push(format!("id_token valid for {}m", mins));
+                note_parts.push(format!(
+                    "id_token valid for {}",
+                    fmt_duration_secs(exp_ts - now)
+                ));
             }
         }
         if let Some(refresh) = auth.last_refresh.as_deref()
             && let Ok(ts) = DateTime::parse_from_rfc3339(refresh)
         {
             let ago = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
-            note_parts.push(format!("refreshed {}h ago", ago.num_hours()));
+            note_parts.push(format!(
+                "refreshed {} ago",
+                fmt_duration_secs(ago.num_seconds())
+            ));
         }
         note_parts.push("usage API 未公开".to_string());
 
@@ -180,6 +188,20 @@ fn decode_jwt_claims(token: &str) -> Option<serde_json::Map<String, Value>> {
     match serde_json::from_slice::<Value>(&bytes).ok()? {
         Value::Object(m) => Some(m),
         _ => None,
+    }
+}
+
+/// 把秒数格式化成最贴近的人类可读单位：`45s` / `12m` / `3h20m` / `7d3h`。
+fn fmt_duration_secs(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (d, h, m) = (secs / 86_400, (secs % 86_400) / 3_600, (secs % 3_600) / 60);
+    match (d, h, m) {
+        (0, 0, 0) => format!("{}s", secs),
+        (0, 0, m) => format!("{}m", m),
+        (0, h, 0) => format!("{}h", h),
+        (0, h, m) => format!("{}h{}m", h, m),
+        (d, 0, _) => format!("{}d", d),
+        (d, h, _) => format!("{}d{}h", d, h),
     }
 }
 
@@ -251,6 +273,20 @@ mod tests {
     fn auth_path_falls_back_to_home_when_no_codex_home() {
         let p = auth_path_with(None, Some(PathBuf::from("/home/icex")));
         assert_eq!(p, Path::new("/home/icex/.codex/auth.json"));
+    }
+
+    #[test]
+    fn fmt_duration_secs_picks_human_units() {
+        assert_eq!(fmt_duration_secs(0), "0s");
+        assert_eq!(fmt_duration_secs(45), "45s");
+        assert_eq!(fmt_duration_secs(120), "2m");
+        assert_eq!(fmt_duration_secs(3 * 3600), "3h");
+        assert_eq!(fmt_duration_secs(3 * 3600 + 20 * 60), "3h20m");
+        assert_eq!(fmt_duration_secs(7 * 86_400 + 3 * 3600), "7d3h");
+        // 615778s（真实观测值）≈ 7d3h
+        assert_eq!(fmt_duration_secs(615_778), "7d3h");
+        // 负数（时钟漂移）不 panic，按 0 处理
+        assert_eq!(fmt_duration_secs(-5), "0s");
     }
 
     #[test]
