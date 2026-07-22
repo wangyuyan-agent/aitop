@@ -120,6 +120,7 @@ impl Provider for Copilot {
             session: None,
             weekly: None,
             credits: None,
+            reset_credits: None,
             sub_quotas: summary.sub_quotas,
             costs: Vec::new(),
             status: None,

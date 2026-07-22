@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,13 @@ pub struct Credits {
     pub unit: String, // "USD" | "credits" | ...
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetCredits {
+    pub available: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expirations: Vec<DateTime<Utc>>,
+}
+
 /// 子配额 — 用于多模型/多维度 provider（如 Gemini 的 pro/flash/flash-lite）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubQuota {
@@ -98,6 +105,8 @@ pub struct Usage {
     pub session: Option<Window>,
     pub weekly: Option<Window>,
     pub credits: Option<Credits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<ResetCredits>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_quotas: Vec<SubQuota>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -241,6 +250,30 @@ fn render_text(u: &Usage) -> String {
             t!("label_credits"),
             c.remaining,
             c.unit
+        ));
+    }
+    if let Some(reset) = &u.reset_credits {
+        let expirations = reset
+            .expirations
+            .iter()
+            .map(|expires| {
+                expires
+                    .with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let detail = if expirations.is_empty() {
+            t!("reset_credits_no_expiry").into_owned()
+        } else {
+            t!("reset_credits_expire", times = expirations).into_owned()
+        };
+        lines.push(format!(
+            "  {}: {} · {}",
+            t!("label_reset_credits"),
+            t!("reset_credits_available", count = reset.available),
+            detail
         ));
     }
     for cost in &u.costs {

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 use rust_i18n::t;
 
 use crate::config::{Config, SortMode};
-use crate::providers::{self, Provider, Usage};
+use crate::providers::{self, Provider, ResetCredits, Usage};
 
 struct App {
     providers: Vec<Arc<dyn Provider>>,
@@ -416,6 +416,9 @@ fn card_height(s: &ProviderState) -> u16 {
             if u.credits.is_some() {
                 n += 1;
             }
+            if u.reset_credits.is_some() {
+                n += 1;
+            }
             n += u.costs.len() as u16;
             n += u.sub_quotas.len() as u16;
             if u.note.is_some() {
@@ -501,6 +504,9 @@ fn render_usage(f: &mut Frame, area: Rect, u: &Usage, config: &Config) {
     if u.credits.is_some() {
         constraints.push(Constraint::Length(1));
     }
+    if u.reset_credits.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
     for _ in &u.costs {
         constraints.push(Constraint::Length(1));
     }
@@ -553,6 +559,17 @@ fn render_usage(f: &mut Frame, area: Rect, u: &Usage, config: &Config) {
             ]),
         };
         f.render_widget(Paragraph::new(line), chunks[idx]);
+        idx += 1;
+    }
+    if let Some(reset) = &u.reset_credits {
+        let line = format_reset_credits(reset);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                truncate(&line, area.width as usize),
+                Style::default().fg(Color::Green),
+            )),
+            chunks[idx],
+        );
         idx += 1;
     }
     for c in &u.costs {
@@ -667,6 +684,31 @@ fn window_detail(window: &crate::providers::Window) -> String {
         parts.push(pace);
     }
     parts.join(" · ")
+}
+
+fn format_reset_credits(reset: &ResetCredits) -> String {
+    let expirations = reset
+        .expirations
+        .iter()
+        .map(|expires| {
+            expires
+                .with_timezone(&Local)
+                .format("%m-%d %H:%M")
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let detail = if expirations.is_empty() {
+        t!("reset_credits_no_expiry").into_owned()
+    } else {
+        t!("reset_credits_expire", times = expirations).into_owned()
+    };
+    format!(
+        "  {}: {} · {}",
+        t!("label_reset_credits"),
+        t!("reset_credits_available", count = reset.available),
+        detail
+    )
 }
 
 fn pace_label(window: &crate::providers::Window) -> Option<String> {
@@ -811,6 +853,7 @@ mod tests {
                 }),
                 weekly: None,
                 credits: None,
+                reset_credits: None,
                 sub_quotas: Vec::new(),
                 costs: Vec::new(),
                 status: None,

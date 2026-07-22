@@ -8,7 +8,7 @@
 
 ## 现状
 
-- ✅ Provider 抽象层（`Usage` / `Window` / `Credits` / `SubQuota` / `CostMetric`）
+- ✅ Provider 抽象层（`Usage` / `Window` / `Credits` / `ResetCredits` / `SubQuota` / `CostMetric`）
 - ✅ 本地探测：默认只显示能在本机找到凭证的 provider
 - ✅ `oneshot` 文本输出 & `json` 机读输出（脚本友好）
 - ✅ **OpenRouter** — API key → `/api/v1/auth/key`
@@ -16,7 +16,7 @@
 - ✅ **Kiro** — 调 `kiro-cli chat --no-interactive /usage` 正则抽取
 - ✅ **Copilot** — GitHub token（env / `gh auth token`）→ `/copilot_internal/user`；付费（`quota_snapshots`，含超额警告）与免费限量（`monthly_quotas`）两种响应都兼容
 - ✅ **Claude** — 官方 OAuth usage API（与 Claude Code `/usage` 面板同源：session / weekly / 按模型 bucket）；端点被限流时回落到扫 `~/.claude/projects/*.jsonl` 本地估算
-- ✅ **Codex** — `~/.codex/auth.json` OAuth 取身份 + 本地 rollout 日志的官方 `rate_limits` 快照（周窗/会话进度条、credits、plan）+ 本地近 7/30 天 token 与费用估算
+- ✅ **Codex** — `~/.codex/auth.json` OAuth 取身份与限额重置额度（可用次数 + 各自到期时间）+ 本地 rollout 日志的官方 `rate_limits` 快照（周窗/会话进度条、credits、plan）+ 本地近 7/30 天 token 与费用估算
 - ✅ **Kiro pool** — `PATH` 上有 `kiro-pool`（多账号轮转池，`usage --json`）时，池中每个 profile 的 credits 以 sub-quota 形式与当前账号并列展示
 - ✅ **TUI**（ratatui）— 卡片布局、并发刷新、自动刷新、风险排序、滚动、reset countdown、pace 提示
 - ✅ **状态探测** — `aitop status` 查询 OpenAI / Anthropic / GitHub 状态页
@@ -83,6 +83,8 @@ status_enabled = true         # TUI 刷新时附带上游状态
 | Kiro pool | `kiro-pool` 在 `PATH`（可用 `KIRO_POOL_BIN` 覆盖） | 可选 —— 存在时扩展 Kiro 卡片 |
 
 `detect()` 仅做本地 I/O（不发网络），因此启动时能立刻过滤未配置的 provider。
+
+Codex 的限额窗口与费用估算仍只读本地数据；限额重置额度通过账号作用域的 ChatGPT OAuth 端点做 best-effort 只读查询，失败不会隐藏本地额度数据。
 
 ## 开发
 

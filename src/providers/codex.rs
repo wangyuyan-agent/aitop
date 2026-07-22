@@ -1,7 +1,8 @@
 //! Codex — OpenAI Codex CLI 的 `~/.codex/auth.json` OAuth 会话 + 本地 rollout 日志限额快照
 //!
 //! ChatGPT / Codex 订阅没有公开的用量查询 API，但 Codex CLI（>= 0.4x）把每次
-//! 服务端返回的限额状态写进 rollout 日志：
+//! 服务端返回的限额状态写进 rollout 日志；限额重置额度则通过已登录 OAuth 会话
+//! 对 ChatGPT 的只读内部端点做 best-effort 查询：
 //! `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 的 `token_count` 事件带
 //! `rate_limits` 快照（官方数据，非估算）：
 //!
@@ -20,6 +21,7 @@
 //!    - 扫最新 rollout 日志（按 mtime 倒序 tail-read）→ 最后一条 `rate_limits`
 //!      快照 → `window_minutes < 1440` 进 session、其余进 weekly；credits 有
 //!      余额时透出；快照年龄拼进 note（例如 `limits 2h ago`）
+//!    - 用 access token 查询可用限额重置次数和各自到期时间；失败不影响日志数据
 //!    - 找不到快照时回退为仅身份显示（旧行为）
 
 use std::io::{Read as _, Seek, SeekFrom};
@@ -33,7 +35,11 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Availability, CostMetric, Credits, Provider, Usage, Window};
+use super::{
+    Availability, CostMetric, Credits, Provider, ResetCredits, Usage, Window, http_client,
+};
+
+const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 
 #[derive(Default)]
 pub struct Codex;
@@ -54,7 +60,6 @@ struct AuthFile {
 struct Tokens {
     id_token: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     access_token: Option<String>,
     #[serde(default)]
     account_id: Option<String>,
@@ -96,6 +101,8 @@ impl Provider for Codex {
         let tokens = auth
             .tokens
             .ok_or_else(|| anyhow!("auth.json 中 tokens 为空，请 `codex login` 重新登录"))?;
+        let access_token = tokens.access_token.clone();
+        let token_account_id = tokens.account_id.clone();
         let id_token = tokens
             .id_token
             .as_deref()
@@ -122,19 +129,32 @@ impl Provider for Codex {
             .get("chatgpt_account_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or(tokens.account_id);
+            .or(token_account_id);
 
-        // 本地 rollout 日志里的官方限额快照（I/O 密集，丢 blocking 池）
+        // 本地扫描和远端 reset-credit 查询并行推进；远端失败不影响本地限额。
         let codex_sessions_dir = sessions_dir();
         let snapshot_dir = codex_sessions_dir.clone();
-        let snapshot = tokio::task::spawn_blocking(move || find_latest_rate_limits(&snapshot_dir))
+        let snapshot_task =
+            tokio::task::spawn_blocking(move || find_latest_rate_limits(&snapshot_dir));
+        let history_dir = codex_sessions_dir.clone();
+        let history_task =
+            tokio::task::spawn_blocking(move || scan_token_history(&history_dir, Utc::now()));
+        let reset_credits = match access_token.as_deref() {
+            Some(token) => match fetch_reset_credits(token, chatgpt_account.as_deref()).await {
+                Ok(credits) => Some(credits),
+                Err(error) => {
+                    tracing::debug!(%error, "Codex reset-credit query unavailable");
+                    None
+                }
+            },
+            None => None,
+        };
+        let snapshot = snapshot_task
             .await
             .context("扫描 ~/.codex/sessions 失败（线程 join）")?;
-        let history_dir = codex_sessions_dir.clone();
-        let history =
-            tokio::task::spawn_blocking(move || scan_token_history(&history_dir, Utc::now()))
-                .await
-                .context("扫描 Codex token 历史失败（线程 join）")?;
+        let history = history_task
+            .await
+            .context("扫描 Codex token 历史失败（线程 join）")?;
 
         // JWT 过期 / 刷新时间
         let exp = claims.get("exp").and_then(Value::as_i64);
@@ -199,6 +219,7 @@ impl Provider for Codex {
             session,
             weekly,
             credits,
+            reset_credits,
             sub_quotas: Vec::new(),
             costs: history.costs,
             status: None,
@@ -337,6 +358,77 @@ fn estimate_codex_usd(t: TokenTotals) -> f64 {
     let output = t.output.saturating_add(t.reasoning_output) as f64;
     (uncached_input * INPUT_PER_M + cached_input * CACHED_INPUT_PER_M + output * OUTPUT_PER_M)
         / 1_000_000.0
+}
+
+// ---------- 限额重置额度（OAuth，只读、best-effort） ----------
+
+#[derive(Debug, Deserialize)]
+struct ResetCreditsResponse {
+    #[serde(default)]
+    credits: Vec<ResetCreditResponse>,
+    #[serde(default)]
+    available_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResetCreditResponse {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    expires_at: Option<DateTime<Utc>>,
+}
+
+async fn fetch_reset_credits(access_token: &str, account_id: Option<&str>) -> Result<ResetCredits> {
+    let client = http_client()?;
+    let mut request = client
+        .get(RESET_CREDITS_URL)
+        .timeout(std::time::Duration::from_secs(5))
+        .bearer_auth(access_token)
+        .header("OpenAI-Beta", "codex-1")
+        .header("originator", "Codex Desktop");
+    if let Some(account_id) = account_id.filter(|id| !id.trim().is_empty()) {
+        request = request.header("ChatGPT-Account-ID", account_id);
+    }
+    let body = request
+        .send()
+        .await
+        .context("查询 Codex 限额重置额度失败")?
+        .error_for_status()
+        .context("Codex 限额重置额度返回错误状态")?
+        .text()
+        .await
+        .context("读取 Codex 限额重置额度响应失败")?;
+    parse_reset_credits_response(&body, Utc::now())
+}
+
+fn parse_reset_credits_response(body: &str, now: DateTime<Utc>) -> Result<ResetCredits> {
+    let response: ResetCreditsResponse =
+        serde_json::from_str(body).context("解析 Codex 限额重置额度响应失败")?;
+    let server_available = response.available_count;
+    let mut available = 0;
+    let mut expirations = Vec::new();
+
+    for credit in response.credits {
+        if credit.status != "available" || credit.expires_at.is_some_and(|expiry| expiry <= now) {
+            continue;
+        }
+        available += 1;
+        if let Some(expiry) = credit.expires_at {
+            expirations.push(expiry);
+        }
+    }
+    expirations.sort_unstable();
+    if server_available != available {
+        tracing::debug!(
+            server_available,
+            filtered_available = available,
+            "Codex reset-credit count differs after local expiry filtering"
+        );
+    }
+    Ok(ResetCredits {
+        available,
+        expirations,
+    })
 }
 
 // ---------- rollout 日志限额快照 ----------
@@ -669,6 +761,43 @@ mod tests {
         );
         // 非 JSON
         assert!(parse_rate_limit_line("not json at all").is_none());
+    }
+
+    #[test]
+    fn parse_reset_credits_filters_and_sorts_available_inventory() {
+        let body = r#"{
+          "credits": [
+            {"status":"available","expires_at":"2026-07-21T00:00:00Z"},
+            {"status":"available","expires_at":"2026-08-12T17:28:42.801894Z"},
+            {"status":"redeemed","expires_at":"2026-08-14T00:00:00Z"},
+            {"status":"available","expires_at":null},
+            {"status":"available","expires_at":"2026-08-11T21:08:11.227705Z"},
+            {"status":"future_status","expires_at":"2026-08-15T00:00:00Z"}
+          ],
+          "available_count": 3
+        }"#;
+        let now = DateTime::parse_from_rfc3339("2026-07-22T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let parsed = parse_reset_credits_response(body, now).unwrap();
+
+        assert_eq!(parsed.available, 3);
+        assert_eq!(parsed.expirations.len(), 2);
+        assert_eq!(
+            parsed.expirations[0].to_rfc3339(),
+            "2026-08-11T21:08:11.227705+00:00"
+        );
+        assert_eq!(
+            parsed.expirations[1].to_rfc3339(),
+            "2026-08-12T17:28:42.801894+00:00"
+        );
+    }
+
+    #[test]
+    fn parse_reset_credits_rejects_invalid_count_shape() {
+        let body = r#"{"credits":[],"available_count":-1}"#;
+        assert!(parse_reset_credits_response(body, Utc::now()).is_err());
     }
 
     #[test]

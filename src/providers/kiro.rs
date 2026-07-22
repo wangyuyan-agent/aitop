@@ -93,6 +93,7 @@ impl Provider for Kiro {
             session: parsed.session,
             weekly: None,
             credits: parsed.credits,
+            reset_credits: None,
             sub_quotas,
             costs: Vec::new(),
             status: None,

@@ -86,6 +86,26 @@ label_credits:
   zh-CN: "余额"
   zh-TW: "餘額"
 
+label_reset_credits:
+  en: "Limit reset credits"
+  zh-CN: "限额重置额度"
+  zh-TW: "限額重設額度"
+
+reset_credits_available:
+  en: "%{count} available"
+  zh-CN: "%{count} 次可用"
+  zh-TW: "%{count} 次可用"
+
+reset_credits_expire:
+  en: "expires %{times}"
+  zh-CN: "到期 %{times}"
+  zh-TW: "到期 %{times}"
+
+reset_credits_no_expiry:
+  en: "no expiry"
+  zh-CN: "无到期时间"
+  zh-TW: "無到期時間"
+
 label_subquotas:
   en: "Sub-quotas"
   zh-CN: "子配额"

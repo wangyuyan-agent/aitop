@@ -72,6 +72,7 @@ fn build_usage(resp: &Value, now: DateTime<Utc>) -> Result<Usage> {
         session: None,
         weekly: None,
         credits,
+        reset_credits: None,
         sub_quotas: Vec::new(),
         costs: Vec::new(),
         status: None,

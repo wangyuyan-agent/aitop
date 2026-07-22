@@ -8,7 +8,7 @@
 
 ## Status
 
-- ✅ Provider abstraction (`Usage` / `Window` / `Credits` / `SubQuota` / `CostMetric`)
+- ✅ Provider abstraction (`Usage` / `Window` / `Credits` / `ResetCredits` / `SubQuota` / `CostMetric`)
 - ✅ Local-availability detection — only show providers whose credentials exist on this machine
 - ✅ `oneshot` (plain text) and `json` output for scripting
 - ✅ **OpenRouter** — API key via `/api/v1/auth/key`
@@ -16,7 +16,7 @@
 - ✅ **Kiro** — shells out to `kiro-cli chat --no-interactive /usage`, regex-extracts
 - ✅ **Copilot** — GitHub token (env / `gh auth token`) → `/copilot_internal/user`; handles paid (`quota_snapshots`, incl. overage reporting) and free-limited (`monthly_quotas`) tiers
 - ✅ **Claude** — official OAuth usage API (same source as Claude Code's `/usage` panel: session / weekly / per-model buckets); falls back to tallying `~/.claude/projects/*.jsonl` when the endpoint is rate-limited
-- ✅ **Codex** — `~/.codex/auth.json` OAuth for identity + official `rate_limits` snapshots from local rollout logs (weekly/session gauges, credits, plan) + local 7/30-day token and cost estimates
+- ✅ **Codex** — `~/.codex/auth.json` OAuth for identity and limit-reset credit inventory (available count + expirations) + official `rate_limits` snapshots from local rollout logs (weekly/session gauges, credits, plan) + local 7/30-day token and cost estimates
 - ✅ **Kiro pool** — if a `kiro-pool` binary (multi-account rotation pool, `usage --json`) is on `PATH`, every profile's credits show up as sub-quotas alongside the current account
 - ✅ **TUI** (ratatui) — card layout, concurrent fetch, auto-refresh, risk sorting, scrolling, reset countdowns, pace hints
 - ✅ **Status checks** — `aitop status` queries OpenAI / Anthropic / GitHub status pages
@@ -83,6 +83,8 @@ status_enabled = true         # attach upstream status during TUI refresh
 | Kiro pool | `kiro-pool` on `PATH` (override: `KIRO_POOL_BIN`) | optional — extends the Kiro card when present |
 
 `detect()` does local I/O only — no network requests — so unconfigured providers can be filtered out instantly at startup.
+
+Codex quota windows and cost estimates stay local. Its limit-reset credit inventory is a best-effort, read-only OAuth request to the account-scoped ChatGPT backend; a failure never hides the local quota data.
 
 ## Development
 
