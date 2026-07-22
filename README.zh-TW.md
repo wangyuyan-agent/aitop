@@ -30,7 +30,7 @@ cargo install --path .
 # 或直接從 GitHub 安裝
 cargo install --git https://github.com/wangyuyan-agent/aitop
 # 固定安裝本次發佈版本
-cargo install --git https://github.com/wangyuyan-agent/aitop --tag v0.3.0
+cargo install --git https://github.com/wangyuyan-agent/aitop --tag v0.3.1
 ```
 
 macOS（Apple Silicon / Intel）與 Linux x86_64 的預編譯套件可從 [GitHub Releases](https://github.com/wangyuyan-agent/aitop/releases) 下載。

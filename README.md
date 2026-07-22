@@ -30,7 +30,7 @@ cargo install --path .
 # or directly from GitHub
 cargo install --git https://github.com/wangyuyan-agent/aitop
 # pin this release
-cargo install --git https://github.com/wangyuyan-agent/aitop --tag v0.3.0
+cargo install --git https://github.com/wangyuyan-agent/aitop --tag v0.3.1
 ```
 
 Prebuilt archives for macOS (Apple Silicon / Intel) and Linux x86_64 are available on [GitHub Releases](https://github.com/wangyuyan-agent/aitop/releases).
