@@ -121,6 +121,8 @@ impl Provider for Copilot {
             weekly: None,
             credits: None,
             sub_quotas: summary.sub_quotas,
+            costs: Vec::new(),
+            status: None,
             updated_at: Utc::now(),
             note,
         })

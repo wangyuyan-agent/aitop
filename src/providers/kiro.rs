@@ -94,6 +94,8 @@ impl Provider for Kiro {
             weekly: None,
             credits: parsed.credits,
             sub_quotas,
+            costs: Vec::new(),
+            status: None,
             updated_at: Utc::now(),
             note: if note_parts.is_empty() {
                 None

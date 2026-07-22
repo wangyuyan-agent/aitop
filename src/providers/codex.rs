@@ -29,11 +29,11 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Availability, Credits, Provider, Usage, Window};
+use super::{Availability, CostMetric, Credits, Provider, Usage, Window};
 
 #[derive(Default)]
 pub struct Codex;
@@ -125,9 +125,16 @@ impl Provider for Codex {
             .or(tokens.account_id);
 
         // 本地 rollout 日志里的官方限额快照（I/O 密集，丢 blocking 池）
-        let snapshot = tokio::task::spawn_blocking(|| find_latest_rate_limits(&sessions_dir()))
+        let codex_sessions_dir = sessions_dir();
+        let snapshot_dir = codex_sessions_dir.clone();
+        let snapshot = tokio::task::spawn_blocking(move || find_latest_rate_limits(&snapshot_dir))
             .await
             .context("扫描 ~/.codex/sessions 失败（线程 join）")?;
+        let history_dir = codex_sessions_dir.clone();
+        let history =
+            tokio::task::spawn_blocking(move || scan_token_history(&history_dir, Utc::now()))
+                .await
+                .context("扫描 Codex token 历史失败（线程 join）")?;
 
         // JWT 过期 / 刷新时间
         let exp = claims.get("exp").and_then(Value::as_i64);
@@ -157,6 +164,9 @@ impl Provider for Codex {
                 "refreshed {} ago",
                 fmt_duration_secs(ago.num_seconds())
             ));
+        }
+        if let Some(latest) = history.latest_total_tokens {
+            note_parts.push(format!("latest {}", fmt_tokens(latest)));
         }
 
         let (session, weekly, credits, mut plan) = match &snapshot {
@@ -190,10 +200,143 @@ impl Provider for Codex {
             weekly,
             credits,
             sub_quotas: Vec::new(),
+            costs: history.costs,
+            status: None,
             updated_at: Utc::now(),
             note: Some(note_parts.join(" · ")),
         })
     }
+}
+
+#[derive(Debug, Default, Clone)]
+struct TokenHistory {
+    costs: Vec<CostMetric>,
+    latest_total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct TokenTotals {
+    input: u64,
+    cached_input: u64,
+    output: u64,
+    reasoning_output: u64,
+    total: u64,
+}
+
+impl TokenTotals {
+    fn add(self, other: Self) -> Self {
+        Self {
+            input: self.input.saturating_add(other.input),
+            cached_input: self.cached_input.saturating_add(other.cached_input),
+            output: self.output.saturating_add(other.output),
+            reasoning_output: self.reasoning_output.saturating_add(other.reasoning_output),
+            total: self.total.saturating_add(other.total),
+        }
+    }
+}
+
+fn scan_token_history(dir: &Path, now: DateTime<Utc>) -> TokenHistory {
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    collect_jsonl(dir, &mut files, 0);
+    let cutoff = now - Duration::days(31);
+
+    let mut seven = TokenTotals::default();
+    let mut thirty = TokenTotals::default();
+    let mut latest: Option<(DateTime<Utc>, u64)> = None;
+
+    for (mtime, path) in files {
+        let modified: DateTime<Utc> = mtime.into();
+        if modified < cutoff {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            if !line.contains("\"token_count\"") {
+                continue;
+            }
+            let Some((ts, usage)) = parse_token_usage_line(line) else {
+                continue;
+            };
+            if ts < cutoff {
+                continue;
+            }
+            if ts >= now - Duration::days(7) {
+                seven = seven.add(usage);
+            }
+            if ts >= now - Duration::days(30) {
+                thirty = thirty.add(usage);
+            }
+            if latest.map(|(old, _)| ts > old).unwrap_or(true) {
+                latest = Some((ts, usage.total));
+            }
+        }
+    }
+
+    let mut costs = Vec::new();
+    if seven.total > 0 {
+        costs.push(cost_metric("Last 7 days", 7, seven));
+    }
+    if thirty.total > 0 {
+        costs.push(cost_metric("Last 30 days", 30, thirty));
+    }
+
+    TokenHistory {
+        costs,
+        latest_total_tokens: latest.map(|(_, t)| t),
+    }
+}
+
+fn parse_token_usage_line(line: &str) -> Option<(DateTime<Utc>, TokenTotals)> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let ts = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))?;
+    let usage = v.get("payload")?.get("info")?.get("last_token_usage")?;
+    Some((ts, parse_token_totals(usage)?))
+}
+
+fn parse_token_totals(v: &Value) -> Option<TokenTotals> {
+    let total = v.get("total_tokens").and_then(Value::as_u64)?;
+    Some(TokenTotals {
+        input: v.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
+        cached_input: v
+            .get("cached_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        output: v.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+        reasoning_output: v
+            .get("reasoning_output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        total,
+    })
+}
+
+fn cost_metric(label: &str, days: u32, totals: TokenTotals) -> CostMetric {
+    CostMetric {
+        label: label.to_string(),
+        days,
+        amount: Some(estimate_codex_usd(totals)),
+        currency: "USD".to_string(),
+        tokens: Some(totals.total),
+    }
+}
+
+/// Local estimate using a conservative blended GPT-class price sheet.
+/// This is intentionally labelled as an estimate in the UI/CLI; provider billing is authoritative.
+fn estimate_codex_usd(t: TokenTotals) -> f64 {
+    const INPUT_PER_M: f64 = 1.25;
+    const CACHED_INPUT_PER_M: f64 = 0.125;
+    const OUTPUT_PER_M: f64 = 10.0;
+    let uncached_input = t.input.saturating_sub(t.cached_input) as f64;
+    let cached_input = t.cached_input as f64;
+    let output = t.output.saturating_add(t.reasoning_output) as f64;
+    (uncached_input * INPUT_PER_M + cached_input * CACHED_INPUT_PER_M + output * OUTPUT_PER_M)
+        / 1_000_000.0
 }
 
 // ---------- rollout 日志限额快照 ----------
@@ -389,6 +532,18 @@ fn fmt_duration_secs(secs: i64) -> String {
     }
 }
 
+fn fmt_tokens(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B tokens", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M tokens", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K tokens", n as f64 / 1_000.0)
+    } else {
+        format!("{} tokens", n)
+    }
+}
+
 /// ChatGPT account id 是一个 UUID，把它截成 `abcd1234…` 省横屏。
 fn short_id(s: &str) -> String {
     let n = s.chars().count();
@@ -528,6 +683,38 @@ mod tests {
         assert_eq!(fmt_duration_secs(615_778), "7d3h");
         // 负数（时钟漂移）不 panic，按 0 处理
         assert_eq!(fmt_duration_secs(-5), "0s");
+    }
+
+    #[test]
+    fn parse_token_usage_line_reads_last_usage() {
+        let line = r#"{"timestamp":"2026-07-02T03:03:25.709Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":41994113,"cached_input_tokens":39670272,"output_tokens":141081,"reasoning_output_tokens":59989,"total_tokens":42135194},"last_token_usage":{"input_tokens":180822,"cached_input_tokens":175488,"output_tokens":826,"reasoning_output_tokens":516,"total_tokens":181648}}}}"#;
+        let (ts, usage) = parse_token_usage_line(line).unwrap();
+        assert_eq!(ts.to_rfc3339(), "2026-07-02T03:03:25.709+00:00");
+        assert_eq!(usage.input, 180_822);
+        assert_eq!(usage.cached_input, 175_488);
+        assert_eq!(usage.output, 826);
+        assert_eq!(usage.reasoning_output, 516);
+        assert_eq!(usage.total, 181_648);
+    }
+
+    #[test]
+    fn estimate_codex_usd_accounts_for_cached_tokens() {
+        let totals = TokenTotals {
+            input: 2_000_000,
+            cached_input: 1_000_000,
+            output: 100_000,
+            reasoning_output: 50_000,
+            total: 2_150_000,
+        };
+        let cost = estimate_codex_usd(totals);
+        assert!((cost - 2.875).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fmt_tokens_compacts_large_values() {
+        assert_eq!(fmt_tokens(999), "999 tokens");
+        assert_eq!(fmt_tokens(1_500), "1.5K tokens");
+        assert_eq!(fmt_tokens(2_500_000), "2.5M tokens");
     }
 
     #[test]

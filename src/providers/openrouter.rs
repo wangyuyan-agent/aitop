@@ -73,6 +73,8 @@ fn build_usage(resp: &Value, now: DateTime<Utc>) -> Result<Usage> {
         weekly: None,
         credits,
         sub_quotas: Vec::new(),
+        costs: Vec::new(),
+        status: None,
         updated_at: now,
         note: if limit.is_none() {
             Some(format!("无限额 · 已用 ${:.2}", used))

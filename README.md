@@ -8,7 +8,7 @@
 
 ## Status
 
-- ✅ Provider abstraction (`Usage` / `Window` / `Credits` / `SubQuota`)
+- ✅ Provider abstraction (`Usage` / `Window` / `Credits` / `SubQuota` / `CostMetric`)
 - ✅ Local-availability detection — only show providers whose credentials exist on this machine
 - ✅ `oneshot` (plain text) and `json` output for scripting
 - ✅ **OpenRouter** — API key via `/api/v1/auth/key`
@@ -16,9 +16,11 @@
 - ✅ **Kiro** — shells out to `kiro-cli chat --no-interactive /usage`, regex-extracts
 - ✅ **Copilot** — GitHub token (env / `gh auth token`) → `/copilot_internal/user`; handles paid (`quota_snapshots`, incl. overage reporting) and free-limited (`monthly_quotas`) tiers
 - ✅ **Claude** — official OAuth usage API (same source as Claude Code's `/usage` panel: session / weekly / per-model buckets); falls back to tallying `~/.claude/projects/*.jsonl` when the endpoint is rate-limited
-- ✅ **Codex** — `~/.codex/auth.json` OAuth for identity + official `rate_limits` snapshots from local rollout logs (`~/.codex/sessions/**/rollout-*.jsonl` `token_count` events → weekly/session gauges, credits, plan)
+- ✅ **Codex** — `~/.codex/auth.json` OAuth for identity + official `rate_limits` snapshots from local rollout logs (weekly/session gauges, credits, plan) + local 7/30-day token and cost estimates
 - ✅ **Kiro pool** — if a `kiro-pool` binary (multi-account rotation pool, `usage --json`) is on `PATH`, every profile's credits show up as sub-quotas alongside the current account
-- ✅ **TUI** (ratatui) — card layout, concurrent fetch, live refresh
+- ✅ **TUI** (ratatui) — card layout, concurrent fetch, auto-refresh, risk sorting, scrolling, reset countdowns, pace hints
+- ✅ **Status checks** — `aitop status` queries OpenAI / Anthropic / GitHub status pages
+- ✅ **Config file** — `~/.config/aitop/config.toml` (override with `AITOP_CONFIG`)
 - ✅ **i18n** — English / 简体中文 / 繁體中文, data-driven via `rust-i18n` + `locales/app.yml`
 
 ## Install
@@ -27,7 +29,11 @@
 cargo install --path .
 # or directly from GitHub
 cargo install --git https://github.com/wangyuyan-agent/aitop
+# pin this release
+cargo install --git https://github.com/wangyuyan-agent/aitop --tag v0.3.0
 ```
+
+Prebuilt archives for macOS (Apple Silicon / Intel) and Linux x86_64 are available on [GitHub Releases](https://github.com/wangyuyan-agent/aitop/releases).
 
 ## Usage
 
@@ -45,12 +51,24 @@ aitop oneshot --provider all          # text, every provider
 aitop oneshot --provider openrouter   # single provider
 aitop json --pretty                   # machine-readable
 aitop json --provider gemini,openrouter
+aitop status                          # upstream service status
 
 # Single-provider live watcher
 aitop watch gemini --interval 30
 ```
 
 **TUI keys:** `q` / `Ctrl-C` quit · `r` refresh · `↑↓` / `jk` navigate · `g` / `G` jump to top/bottom.
+
+## Config
+
+`aitop` reads `~/.config/aitop/config.toml`; set `AITOP_CONFIG=/path/to/config.toml` to override.
+
+```toml
+refresh_interval_secs = 300   # TUI auto-refresh interval, minimum 5s
+sort = "risk"                 # risk | name | original
+show_accounts = true          # show account names in the TUI
+status_enabled = true         # attach upstream status during TUI refresh
+```
 
 ## Credentials
 
@@ -80,6 +98,8 @@ RUST_LOG=debug cargo run
 
 - `src/providers/mod.rs` — unified data model + `Provider` trait + `Availability` detection + selector
 - `src/providers/<name>.rs` — per-provider implementation (async_trait, each owns its own auth path)
+- `src/providers/status.rs` — upstream status-page checks
+- `src/config.rs` — TOML config loading
 - `src/ui/` — ratatui layer (header · provider cards · footer)
 - `src/lang.rs` — language detection; parses `--lang` / `$AITOP_LANG` / `$LANG` and pushes the BCP 47 code into `rust-i18n`
 - `locales/app.yml` — every user-facing string, one YAML entry per key with columns for each supported locale

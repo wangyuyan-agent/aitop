@@ -94,6 +94,8 @@ impl Provider for Claude {
                     weekly: parsed.weekly,
                     credits: None,
                     sub_quotas: parsed.extra,
+                    costs: Vec::new(),
+                    status: None,
                     updated_at: Utc::now(),
                     note: Some("official usage API".to_string()),
                 });
@@ -136,6 +138,8 @@ impl Provider for Claude {
             weekly,
             credits: None,
             sub_quotas: Vec::new(),
+            costs: Vec::new(),
+            status: None,
             updated_at: Utc::now(),
             note,
         })

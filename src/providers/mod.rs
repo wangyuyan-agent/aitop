@@ -18,6 +18,7 @@ pub mod copilot;
 pub mod gemini;
 pub mod kiro;
 pub mod openrouter;
+pub mod status;
 
 /// 所有 provider 共享的 HTTP 请求 UA。GitHub 等家要求 UA 非空，这里给一个可追溯的串。
 pub(crate) const HTTP_USER_AGENT: &str = concat!(
@@ -64,6 +65,31 @@ pub struct SubQuota {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostMetric {
+    pub label: String,
+    pub days: u32,
+    pub amount: Option<f64>,
+    pub currency: String,
+    pub tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusLevel {
+    Operational,
+    Degraded,
+    Outage,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    pub level: StatusLevel,
+    pub message: String,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
     pub provider: String,
     pub source: String, // "api" | "oauth" | "cli" | "cookie"
@@ -74,6 +100,10 @@ pub struct Usage {
     pub credits: Option<Credits>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_quotas: Vec<SubQuota>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub costs: Vec<CostMetric>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ProviderStatus>,
     pub updated_at: DateTime<Utc>,
     pub note: Option<String>,
 }
@@ -213,6 +243,20 @@ fn render_text(u: &Usage) -> String {
             c.unit
         ));
     }
+    for cost in &u.costs {
+        let amount = cost
+            .amount
+            .map(|v| format!("~{:.2} {}", v, cost.currency))
+            .unwrap_or_else(|| cost.currency.clone());
+        let tokens = cost
+            .tokens
+            .map(|t| format!(" · {}", fmt_tokens(t)))
+            .unwrap_or_default();
+        lines.push(format!("  {}: {}{}", cost.label, amount, tokens));
+    }
+    if let Some(status) = &u.status {
+        lines.push(format!("  Status: {:?} · {}", status.level, status.message));
+    }
     if !u.sub_quotas.is_empty() {
         lines.push(format!("  {}:", t!("label_subquotas")));
         for sq in &u.sub_quotas {
@@ -223,4 +267,16 @@ fn render_text(u: &Usage) -> String {
         lines.push(format!("  Note: {}", n));
     }
     lines.join("\n")
+}
+
+fn fmt_tokens(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B tokens", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M tokens", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K tokens", n as f64 / 1_000.0)
+    } else {
+        format!("{} tokens", n)
+    }
 }

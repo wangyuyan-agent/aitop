@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod config;
 mod lang;
 mod providers;
 mod ui;
@@ -62,6 +63,8 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         interval: u64,
     },
+    /// 查看上游服务状态
+    Status,
 }
 
 #[tokio::main]
@@ -81,6 +84,15 @@ async fn main() -> Result<()> {
         Some(Cmd::Oneshot { provider }) => providers::oneshot_text(&provider).await,
         Some(Cmd::Json { provider, pretty }) => providers::oneshot_json(&provider, pretty).await,
         Some(Cmd::Watch { provider, interval }) => ui::run_watch(&provider, interval).await,
+        Some(Cmd::Status) => {
+            for (target, status) in providers::status::fetch_all().await {
+                println!(
+                    "{} ({}) · {:?} · {}",
+                    target.name, target.id, status.level, status.message
+                );
+            }
+            Ok(())
+        }
     }
 }
 

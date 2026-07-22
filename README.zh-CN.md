@@ -8,7 +8,7 @@
 
 ## 现状
 
-- ✅ Provider 抽象层（`Usage` / `Window` / `Credits` / `SubQuota`）
+- ✅ Provider 抽象层（`Usage` / `Window` / `Credits` / `SubQuota` / `CostMetric`）
 - ✅ 本地探测：默认只显示能在本机找到凭证的 provider
 - ✅ `oneshot` 文本输出 & `json` 机读输出（脚本友好）
 - ✅ **OpenRouter** — API key → `/api/v1/auth/key`
@@ -16,9 +16,11 @@
 - ✅ **Kiro** — 调 `kiro-cli chat --no-interactive /usage` 正则抽取
 - ✅ **Copilot** — GitHub token（env / `gh auth token`）→ `/copilot_internal/user`；付费（`quota_snapshots`，含超额警告）与免费限量（`monthly_quotas`）两种响应都兼容
 - ✅ **Claude** — 官方 OAuth usage API（与 Claude Code `/usage` 面板同源：session / weekly / 按模型 bucket）；端点被限流时回落到扫 `~/.claude/projects/*.jsonl` 本地估算
-- ✅ **Codex** — `~/.codex/auth.json` OAuth 取身份 + 本地 rollout 日志的官方 `rate_limits` 快照（`~/.codex/sessions/**/rollout-*.jsonl` 的 `token_count` 事件 → 周窗/会话进度条、credits、plan）
+- ✅ **Codex** — `~/.codex/auth.json` OAuth 取身份 + 本地 rollout 日志的官方 `rate_limits` 快照（周窗/会话进度条、credits、plan）+ 本地近 7/30 天 token 与费用估算
 - ✅ **Kiro pool** — `PATH` 上有 `kiro-pool`（多账号轮转池，`usage --json`）时，池中每个 profile 的 credits 以 sub-quota 形式与当前账号并列展示
-- ✅ **TUI**（ratatui）— 卡片布局、并发刷新、实时更新
+- ✅ **TUI**（ratatui）— 卡片布局、并发刷新、自动刷新、风险排序、滚动、reset countdown、pace 提示
+- ✅ **状态探测** — `aitop status` 查询 OpenAI / Anthropic / GitHub 状态页
+- ✅ **配置文件** — `~/.config/aitop/config.toml`（可用 `AITOP_CONFIG` 覆盖）
 - ✅ **多语言** — English / 简体中文 / 繁體中文，通过 `rust-i18n` + `locales/app.yml` 数据驱动
 
 ## 安装
@@ -27,7 +29,11 @@
 cargo install --path .
 # 或直接从 GitHub 安装
 cargo install --git https://github.com/wangyuyan-agent/aitop
+# 固定安装本次发布版本
+cargo install --git https://github.com/wangyuyan-agent/aitop --tag v0.3.0
 ```
+
+macOS（Apple Silicon / Intel）和 Linux x86_64 的预编译包可从 [GitHub Releases](https://github.com/wangyuyan-agent/aitop/releases) 下载。
 
 ## 用法
 
@@ -45,12 +51,24 @@ aitop oneshot --provider all          # 文本，全部 provider
 aitop oneshot --provider openrouter   # 单个 provider
 aitop json --pretty                   # JSON
 aitop json --provider gemini,openrouter
+aitop status                          # 查看上游服务状态
 
 # 盯住单个 provider
 aitop watch gemini --interval 30
 ```
 
 **TUI 键位：** `q` / `Ctrl-C` 退出 · `r` 刷新 · `↑↓` / `jk` 切换 · `g` / `G` 跳首尾。
+
+## 配置
+
+`aitop` 会读取 `~/.config/aitop/config.toml`；也可用 `AITOP_CONFIG=/path/to/config.toml` 指定。
+
+```toml
+refresh_interval_secs = 300   # TUI 自动刷新间隔，最低 5 秒
+sort = "risk"                 # risk | name | original
+show_accounts = true          # TUI 是否显示账号
+status_enabled = true         # TUI 刷新时附带上游状态
+```
 
 ## 凭证
 
@@ -80,6 +98,8 @@ RUST_LOG=debug cargo run
 
 - `src/providers/mod.rs` — 统一数据模型 + `Provider` trait + `Availability` 探测 + 选择器
 - `src/providers/<name>.rs` — 各 provider 实现（每个独立持有凭证路径）
+- `src/providers/status.rs` — 上游状态页探测
+- `src/config.rs` — TOML 配置加载
 - `src/ui/` — ratatui 层（header · 卡片 · footer）
 - `src/lang.rs` — 语言检测；解析 `--lang` / `$AITOP_LANG` / `$LANG` 并把 BCP 47 代码推给 `rust-i18n`
 - `locales/app.yml` — 所有面向用户的文案，每条一个 key，每种语言一列

@@ -131,6 +131,8 @@ impl Provider for Gemini {
             weekly: None,
             credits: None,
             sub_quotas,
+            costs: Vec::new(),
+            status: None,
             updated_at: Utc::now(),
             note: project_id.map(|p| format!("project={}", p)),
         })
